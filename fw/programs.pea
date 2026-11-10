@@ -1,0 +1,100 @@
+; Firmware for the PEA protocol emulator. Each program runs on one engine.
+
+.program uart_tx
+; UART 8N1 transmitter. Tick = half a bit. side pin = out pin = TX. LSB first (out_right).
+; Wrap from the last instruction back to the first.
+        pull            side 1      ; idle high; wait for a byte
+        set x 7         side 0 [1]  ; start bit
+bit:    out pins 1
+        jmp x-- bit
+        nop             side 1 [1]  ; stop bit
+
+.program uart_rx
+; UART 8N1 receiver on pin 1. Tick = half a bit; the start edge re-aligns the divider.
+start:  wait 0 pin 1 resync         ; start bit; next tick is half a bit later
+        set x 7         [1]         ; middle of start bit, then one bit to bit 0
+bit:    in pins 1
+        jmp x-- bit
+        push noblock                ; middle of stop bit
+        jmp start
+
+.program spi_master
+; SPI master, mode 0, MSB first, full duplex: two instructions per bit, autopull + autopush.
+; side pin = SCK, out pin = MOSI, in pin = MISO. Wrap the two lines.
+        out pins 1      side 0
+        in pins 1       side 1
+
+.program i2c_master
+; I2C master write with ACK capture and clock stretching. Tick = quarter bit.
+; Open-drain SDA = pin 5 (set/out/in base), SCL = pin 6 (side). Host sends n-1, then n bytes.
+; The RX FIFO gets one byte per data byte: 0 = ACK, 1 = NACK.
+start:  pull
+        mov x osr
+        set pins 0      [1]         ; START: SDA falls while SCL is high
+byte:   pull            side 0
+        set y 7
+bit:    out pins 1      side 0
+        wait 1 pin 6    side 1      ; release SCL and wait for it (the slave may stretch)
+        nop
+        jmp y-- bit     side 0
+        set pins 1      side 0      ; release SDA for the ACK bit
+        wait 1 pin 6    side 1
+        in pins 1
+        push noblock    side 0
+        jmp x-- byte    side 0
+        set pins 0      side 0
+        nop             side 1 [1]
+        set pins 1      [1]         ; STOP: SDA rises while SCL is high
+        jmp start
+
+.program nrzi_tx
+; NRZI transmitter with bit stuffing and CRC (USB-style line coding). Tick = bit/3.
+; Host sends bit count-1, then the data bytes, then sets flag 7. Sends a sync transition,
+; then the bits. Afterwards pushes CRC low, CRC high and raises flag 0.
+tx:     pull
+        mov x osr
+        out null 8
+        mov crc ~null               ; CRC = 0xFFFF
+        set ctl 6                   ; CRC on OUT bits, clear the run counter
+        wait 1 flag 7
+        set nrzi 0      [2]         ; sync transition
+bit:    out nrzi 1
+        jmp stuff ins
+        jmp x-- bit
+        jmp fin
+ins:    nop
+        set nrzi 0                  ; stuffed 0 (a transition), not in the CRC
+        nop
+        jmp x-- bit
+fin:    set ctl 0
+        mov isr crclo
+        push
+        mov isr crchi
+        push
+        set flag 8                  ; flag 0 = 1
+        jmp tx
+
+.program nrzi_rx
+; NRZI receiver with destuffing and CRC on pin 7. Tick = bit/3, resync_half, autopush.
+; Host sends bit count-1. Pushes the data bytes, then CRC low, CRC high, and raises flag 1.
+rx:     pull
+        mov x osr
+        mov crc ~null
+        set ctl 5                   ; CRC on IN bits, clear the run counter
+        wait 1 anyedge 7 resync     ; sync transition
+        in nrzi 1 discard [3]       ; latch the line level; the next sample is mid bit 0
+bit:    in nrzi 1
+        jmp stuff skip
+        jmp x-- bit
+        jmp fin
+skip:   nop
+        in nrzi 1 discard           ; drop the stuffed bit
+        nop
+        jmp x-- bit
+fin:    set ctl 0
+        mov isr crclo
+        push
+        mov isr crchi
+        push
+        set flag 9                  ; flag 1 = 1
+        jmp rx

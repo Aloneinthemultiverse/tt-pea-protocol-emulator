@@ -1,42 +1,77 @@
-![](../../workflows/gds/badge.svg) ![](../../workflows/docs/badge.svg) ![](../../workflows/test/badge.svg) ![](../../workflows/fpga/badge.svg)
+# PEA — Protocol Emulator ASIC (Auralis design)
 
-# Tiny Tapeout Verilog Project Template
+Spec: an open-source, general-purpose protocol emulator for the Jane Street / Tiny Tapeout challenge. IHP sg13cmos5l 130 nm, 8x4 tiles. Protocols are firmware, not fixed logic: four small programmable engines read pins, write pins and hit timing exactly, so new protocols can be added after fabrication.
 
-- [Read the documentation for project](docs/info.md)
+How it was made: designed with the Auralis workflow. RTL was linted (Verilator `-Wall`), simulated (Icarus) and synthesized (Yosys) on the Auralis semiconductor server's EDA image; Laya gave the PASS/FIX verdict.
 
-## What is Tiny Tapeout?
+## Architecture
 
-Tiny Tapeout is an educational project that aims to make it easier and cheaper than ever to get your digital and analog designs manufactured on a real chip.
+```
+ host SPI (ui_in) ──► registers ──► 64 x 16-bit program store (shared)
+                         │                 │
+                         ▼                 ▼
+      4 x engine: PC, X, Y, ISR, OSR, 16.8 fractional tick divider, CRC/LFSR,
+                  run-length counter, 4-deep TX and RX FIFOs
+                         │
+                         ▼
+      8 protocol pins (uio, push-pull or open-drain) · 8 shared flags (6 on uo_out)
+```
 
-To learn more and get started, visit https://tinytapeout.com.
+- **One instruction per tick, 16 bits:** `[15:13]` opcode, `[12:11]` side-set (none / toggle / low / high), `[10:9]` delay, `[8:0]` operand. Opcodes: JMP, WAIT, IN, OUT, PUSH/PULL, MOV, SET, ALU.
+- **Host port:** SPI slave, mode 0. Byte 0 = `{write, addr[6:0]}`, then data bytes for that register. Loads programs, configures engines, reads/writes FIFOs.
 
-## Set up your Verilog project
+## What is different from RP2040 PIO
 
-1. Add your Verilog files to the `src` folder.
-2. Edit the [info.yaml](info.yaml) and update information about your project, paying special attention to the `source_files` and `top_module` properties. If you are upgrading an existing Tiny Tapeout project, check out our [online info.yaml migration tool](https://tinytapeout.github.io/tt-yaml-upgrade-tool/).
-3. Edit [docs/info.md](docs/info.md) and add a description of your project.
-4. Adapt the testbench to your design. See [test/README.md](test/README.md) for more information.
+| PIO limit | PEA |
+|---|---|
+| Divider phase is free-running | `WAIT ... resync` and `auto_resync` restart the tick divider on an edge: clock recovery for UART, USB, CAN |
+| No line coding | NRZI encode/decode as an OUT destination / IN source, optionally on a differential pair |
+| Bit stuffing costs many instructions | Run-length counter + `JMP stuff` branch (USB: 6 ones, CAN: 5 equal bits) |
+| CRC must be done by the host | Programmable CRC/LFSR (width and polynomial) updated by shifted bits |
+| Open-drain needs pindir tricks | Per-pin open-drain mode (I2C, 1-Wire) |
+| Only `X--`/`Y--` | Small ALU (add, sub, xor, and, shift, swap) and `X != Y` branch |
+| No trigger outputs | 8 shared flags, set/waited on by engines and the host, 6 visible on pins |
 
-The GitHub action will automatically build the ASIC files using [LibreLane](https://www.zerotoasiccourse.com/terminology/librelane/).
+## Blocks and verification
 
-## Enable GitHub actions to build the results page
+| Block | File | What it does | Checks | Laya |
+|---|---|---|---|---|
+| Engine | `src/pea_engine.v` | Instruction execution, tick divider with resync, shifters, CRC, run counter, NRZI | exercised by all tests below | PASS (0.73) |
+| Core | `src/pea_core.v` | 4 engines, program store, FIFOs, pins, flags, SPI host port | host register read/write, flags on pins: 2/2 | PASS (0.73) |
+| UART firmware | `fw/programs.pea` `uart_tx`, `uart_rx` | 8N1 at 115200 baud; TX checked by an independent monitor; RX with loopback, external driver, ±3 % baud error | 7/7 | PASS (0.73) |
+| SPI firmware | `spi_master` | Mode 0 full duplex, 2 instructions per bit, against a slave model | 3/3 | PASS (0.73) |
+| I2C firmware | `i2c_master` | Open-drain master write, ACK and NACK capture, clock stretching, START/STOP, against a slave model | 4/4 | PASS (0.73) |
+| Line coding | `nrzi_tx`, `nrzi_rx` | NRZI + bit stuffing + CRC-16 both directions against a reference coder | 7/7 | PASS (0.73) |
+| **Top** | `src/tt_um_auralis_pea.v` | Tiny Tapeout wrapper | **23/23**, lint clean, synthesizes: 25,472 generic cells, 2,347 flip-flops | **PASS (0.73)** |
 
-- [Enabling GitHub Pages](https://tinytapeout.com/faq/#my-github-action-is-failing-on-the-pages-part)
+Run the full suite: `python test/gen_tb.py` builds `test/tb_pea.sv` (firmware embedded), then
+`iverilog -g2012 -o sim test/tb_pea.sv src/*.v && vvp sim`.
 
-## Resources
+## Register map (7-bit address)
 
-- [FAQ](https://tinytapeout.com/faq/)
-- [Digital design lessons](https://tinytapeout.com/digital_design/)
-- [Learn how semiconductors work](https://tinytapeout.com/siliwiz/)
-- [Join the community](https://tinytapeout.com/discord)
-- [Build your design locally](https://www.tinytapeout.com/guides/local-hardening/)
+| Addr | Register |
+|---|---|
+| `0x00` | engine enables `[3:0]` |
+| `0x01` | IRQ flags `[3:0]`, FIFO overruns `[7:4]` (write 1 to clear) |
+| `0x02` | shared flags |
+| `0x03`, `0x04` | program address; program data (low byte, high byte, auto-increment) |
+| `0x05` | pin inputs (read) |
+| `0x06`, `0x07`, `0x08` | pin open-drain mask, pin direction, pin output |
+| `0x10+16e+0..2` | engine `e` tick divider: fraction, low, high |
+| `+3`, `+4`, `+5` | `{out_base, in_base}`, `{side_pin, set_base}`, `{set_count, jmp_pin}` |
+| `+6`, `+7`, `+8` | wrap bottom, wrap top, `{out_threshold, in_threshold}` |
+| `+9` | mode: in_right, out_right, autopush, autopull, auto_resync, resync_half, stuff_mode, diff |
+| `+A`, `+B`, `+C` | `{crc_width-1, stuff_n}`, CRC polynomial low, high |
+| `+D`, `+E`, `+F` | FIFO (write TX / read RX), FIFO status, PC (write = jump) |
 
-## What next?
+## Limits (stated plainly)
 
-- [Submit your design to the next shuttle](https://app.tinytapeout.com/).
-- Edit [this README](README.md) and explain your design, how it works, and how to test it.
-- Share your project on your social network of choice:
-  - LinkedIn [#tinytapeout](https://www.linkedin.com/search/results/content/?keywords=%23tinytapeout) [@TinyTapeout](https://www.linkedin.com/company/100708654/)
-  - Mastodon [#tinytapeout](https://chaos.social/tags/tinytapeout) [@matthewvenn](https://chaos.social/@matthewvenn)
-  - X (formerly Twitter) [#tinytapeout](https://twitter.com/hashtag/tinytapeout) [@tinytapeout](https://twitter.com/tinytapeout)
-  - Bluesky [@tinytapeout.com](https://bsky.app/profile/tinytapeout.com)
+- **Not placed and routed.** The IHP area is an estimate: about 0.3 mm² of cells against about 1.0 mm² for 8x4 tiles. The Tiny Tapeout GDS flow has not been run yet.
+- **Low-speed USB and CAN:** the line-coding primitives (NRZI, stuffing, CRC, resync) are verified, but no complete USB or CAN stack has been written or tested.
+- **10 Mbit Ethernet is out of reach** for this version: the 4-byte FIFOs and the oversampled SPI host cannot carry 10 Mbit/s payloads.
+- I2C firmware is master-write only; read is not written yet.
+- No formal verification or randomized tests yet; tests are directed.
+
+## AI use
+
+Designed with AI assistance (Claude, driving the Auralis engineering workflow): architecture, RTL, assembler, firmware and tests were AI-written and checked by lint, simulation against independent protocol models, and synthesis.
