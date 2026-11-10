@@ -16,7 +16,7 @@ module pea_fifo (
     reg [2:0] wp, rp;
     assign empty = (wp == rp);
     assign full  = (wp[1:0] == rp[1:0]) && (wp[2] != rp[2]);
-    assign dout  = mem[rp[1:0]];
+    assign dout  = empty ? 8'h00 : mem[rp[1:0]];   // never present unwritten storage
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin wp <= 3'd0; rp <= 3'd0; end
         else begin
@@ -117,17 +117,17 @@ module pea_core (
     wire [3:0]  e_irq, e_ovr, e_wait, tx_full, tx_empty, rx_full, rx_empty;
     wire [7:0]  rx_dout [0:3];
 
-    integer i;
+    integer i, k;                                  // i: clocked reset loop, k: combinational loop
     reg [7:0] po_n, pd_n, fl_n;
     always @* begin
         po_n = pin_out; pd_n = pin_dir; fl_n = flags;
         if (w_glob && addr[3:0] == 4'h8) po_n = byte_in;
         if (w_glob && addr[3:0] == 4'h7) pd_n = byte_in;
         if (w_glob && addr[3:0] == 4'h2) fl_n = byte_in;
-        for (i = 0; i < 4; i = i + 1) begin
-            po_n = (po_n & ~e_pm[i]) | (e_pv[i] & e_pm[i]);
-            pd_n = (pd_n & ~e_dm[i]) | (e_dv[i] & e_dm[i]);
-            fl_n = (fl_n | e_fs[i]) & ~e_fc[i];
+        for (k = 0; k < 4; k = k + 1) begin
+            po_n = (po_n & ~e_pm[k]) | (e_pv[k] & e_pm[k]);
+            pd_n = (pd_n & ~e_dm[k]) | (e_dv[k] & e_dm[k]);
+            fl_n = (fl_n | e_fs[k]) & ~e_fc[k];
         end
     end
 
