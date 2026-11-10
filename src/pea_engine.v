@@ -102,7 +102,9 @@ module pea_engine (
     wire        pin_in0  = pins[in_base];
     wire        edge_any = pins[a[5:3]] != pins_prev[a[5:3]];
     wire [5:0]  pc_inc   = (pc == wrap_top) ? wrap_bot : pc + 6'd1;
-    wire [15:0] div_m1   = (div_int == 16'd0) ? 16'd0 : div_int - 16'd1;
+    // minimum tick period is 2 clocks (instruction fetch is registered)
+    wire [15:0] div_eff  = (div_int < 16'd2) ? 16'd2 : div_int;
+    wire [15:0] div_m1   = div_eff - 16'd1;
     wire [8:0]  fsum     = {1'b0, facc} + {1'b0, div_frac};
 
     // next-state (blocking temporaries, assigned once: one writer per register)
@@ -363,7 +365,7 @@ module pea_engine (
             crc <= crc_n; crc_in_en <= crc_in_n; crc_out_en <= crc_out_n; run <= run_n;
             last_s <= last_s_n; last_b <= last_b_n;
             if (resync) begin
-                dcnt <= resync_half ? {1'b0, div_int[15:1]} : div_m1;
+                dcnt <= resync_half ? {1'b0, div_eff[15:1]} : div_m1;
             end else if (tick) begin
                 facc <= fsum[7:0];
                 dcnt <= div_m1 + {15'd0, fsum[8]};

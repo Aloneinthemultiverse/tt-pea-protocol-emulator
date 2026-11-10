@@ -66,6 +66,8 @@ Run the full suite: `python test/gen_tb.py` builds `test/tb_pea.sv` (firmware em
 
 ## Limits (stated plainly)
 
+- **Clock target is 25 MHz** for the first hardening pass. The fastest tick is clock/2, because instruction fetch is registered.
+
 - **Not placed and routed.** The IHP area is an estimate: about 0.3 mm² of cells against about 1.0 mm² for 8x4 tiles. The Tiny Tapeout GDS flow has not been run yet.
 - **Low-speed USB and CAN:** the line-coding primitives (NRZI, stuffing, CRC, resync) are verified, but no complete USB or CAN stack has been written or tested.
 - **10 Mbit Ethernet is out of reach** for this version: the 4-byte FIFOs and the oversampled SPI host cannot carry 10 Mbit/s payloads.

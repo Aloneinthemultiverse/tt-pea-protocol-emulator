@@ -189,6 +189,10 @@ module pea_core (
             wire       mine = e_sel && (e_idx == gi);
             wire [7:0] tx_dout, rx_din;
             wire       tx_pop, rx_push;
+            // Registered instruction fetch: breaks the 64-way program mux out of the execute path.
+            // The engine's tick period is at least 2 clocks, so the instruction is always ready.
+            reg [15:0] ir_r;
+            always @(posedge clk) ir_r <= prog[e_pc[g]];
             pea_fifo u_tx (.clk(clk), .rst_n(rst_n), .push(wr_stb && mine && addr[3:0] == 4'hD), .din(byte_in),
                            .pop(tx_pop), .dout(tx_dout), .full(tx_full[g]), .empty(tx_empty[g]));
             pea_fifo u_rx (.clk(clk), .rst_n(rst_n), .push(rx_push), .din(rx_din),
@@ -196,7 +200,7 @@ module pea_core (
                            .full(rx_full[g]), .empty(rx_empty[g]));
             pea_engine u_e (
                 .clk(clk), .rst_n(rst_n), .en(en[g]),
-                .pc_o(e_pc[g]), .ir(prog[e_pc[g]]),
+                .pc_o(e_pc[g]), .ir(ir_r),
                 .force_pc(wr_stb && mine && addr[3:0] == 4'hF), .force_addr(byte_in[5:0]),
                 .div_int({ecfg[{gi, 4'h2}], ecfg[{gi, 4'h1}]}), .div_frac(ecfg[{gi, 4'h0}]),
                 .in_base(ecfg[{gi, 4'h3}][2:0]), .out_base(ecfg[{gi, 4'h3}][5:3]),
