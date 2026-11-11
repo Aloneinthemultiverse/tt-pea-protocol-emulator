@@ -1,0 +1,18 @@
+[tasks]
+prove
+cover
+[options]
+prove: mode prove
+prove: depth 12
+cover: mode cover
+cover: depth 16
+[engines]
+smtbmc yices
+[script]
+read_verilog -formal pea_core.v pea_engine.v
+read_verilog -sv -formal fifo_props.sv
+prep -top fifo_props
+[files]
+../src/pea_core.v
+../src/pea_engine.v
+fifo_props.sv

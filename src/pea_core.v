@@ -26,6 +26,28 @@ module pea_fifo (
     end
 endmodule
 
+// Round-robin fetch arbiter: grants one requesting engine per clock, starting the search at
+// the engine after the last grant. `hold` (a program write) freezes the pointer.
+module pea_fetch_arb (
+    input  wire       clk,
+    input  wire       rst_n,
+    input  wire [3:0] need,
+    input  wire       hold,
+    output reg  [1:0] gsel,
+    output reg        gany
+);
+    reg [1:0] rr;
+    integer j;
+    always @* begin
+        gsel = rr; gany = 1'b0;
+        for (j = 3; j >= 0; j = j - 1)
+            if (need[rr + j[1:0]]) begin gsel = rr + j[1:0]; gany = 1'b1; end
+    end
+    always @(posedge clk or negedge rst_n)
+        if (!rst_n) rr <= 2'd0;
+        else if (gany && !hold) rr <= gsel + 2'd1;
+endmodule
+
 module pea_core (
     input  wire       clk,
     input  wire       rst_n,
@@ -188,7 +210,6 @@ module pea_core (
     reg [15:0] ir_r [0:3];
     reg [5:0]  ir_pc [0:3];
     reg [3:0]  ir_v;
-    reg [1:0]  rr;
     wire [3:0] need;
     genvar n;
     generate
@@ -196,20 +217,16 @@ module pea_core (
             assign need[n] = !(ir_v[n] && ir_pc[n] == e_pc[n]);
         end
     endgenerate
-    reg [1:0] gsel;
-    reg       gany;
-    integer j, r;                                  // j: arbiter (combinational), r: reset loop
-    always @* begin
-        gsel = rr; gany = 1'b0;
-        for (j = 3; j >= 0; j = j - 1)
-            if (need[rr + j[1:0]]) begin gsel = rr + j[1:0]; gany = 1'b1; end
-    end
+    wire [1:0]  gsel;
+    wire        gany;
+    integer r;                                     // reset loop
+    wire        pwrite = w_glob && addr[3:0] == 4'h4;
+    pea_fetch_arb u_arb (.clk(clk), .rst_n(rst_n), .need(need), .hold(pwrite), .gsel(gsel), .gany(gany));
     wire [5:0]  fpc   = e_pc[gsel];
     wire [15:0] fdata = prog[fpc];
-    wire        pwrite = w_glob && addr[3:0] == 4'h4;
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            ir_v <= 4'd0; rr <= 2'd0;
+            ir_v <= 4'd0;
             for (r = 0; r < 4; r = r + 1) begin ir_r[r] <= 16'd0; ir_pc[r] <= 6'd0; end
         end else if (pwrite) begin
             ir_v <= 4'd0;

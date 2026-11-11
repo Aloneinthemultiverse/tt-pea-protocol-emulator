@@ -1,0 +1,16 @@
+[tasks]
+prove
+
+[options]
+prove: mode prove
+prove: depth 12
+[engines]
+smtbmc yices
+[script]
+read_verilog -formal pea_core.v pea_engine.v
+read_verilog -sv -formal arb_props.sv
+prep -top arb_props
+[files]
+../src/pea_core.v
+../src/pea_engine.v
+arb_props.sv

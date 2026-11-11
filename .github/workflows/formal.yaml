@@ -1,0 +1,9 @@
+name: formal
+on: [push, workflow_dispatch]
+jobs:
+  formal:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: YosysHQ/setup-oss-cad-suite@v3
+      - run: cd formal && sby -f fifo.sby && sby -f arb.sby
