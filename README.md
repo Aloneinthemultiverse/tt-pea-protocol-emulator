@@ -66,7 +66,7 @@ Run the full suite: `python test/gen_tb.py` builds `test/tb_pea.sv` (firmware em
 
 ## Limits (stated plainly)
 
-- **Clock target is 25 MHz** for the first hardening pass. The fastest tick is clock/2, because instruction fetch is registered.
+- **Clock target is 25 MHz** for the first hardening pass. The four engines share one program-store read port (round-robin, fetch only when the PC changes). A tick waits for its instruction, so timing stays exact for tick periods of about 5 clocks or more; shorter periods can add a clock of jitter when fetches collide.
 
 - **Not placed and routed.** The IHP area is an estimate: about 0.3 mm² of cells against about 1.0 mm² for 8x4 tiles. The Tiny Tapeout GDS flow has not been run yet.
 - **Low-speed USB and CAN:** the line-coding primitives (NRZI, stuffing, CRC, resync) are verified, but no complete USB or CAN stack has been written or tested.

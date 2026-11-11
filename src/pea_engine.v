@@ -11,6 +11,7 @@ module pea_engine (
     // program
     output wire [5:0]  pc_o,
     input  wire [15:0] ir,
+    input  wire        ir_ok,       // ir holds the instruction at pc_o
     input  wire        force_pc,
     input  wire [5:0]  force_addr,
     // configuration
@@ -82,7 +83,10 @@ module pea_engine (
     wire [3:0]  ithr = (in_thr == 4'd0 || in_thr > 4'd8) ? 4'd8 : in_thr;
     wire [3:0]  othr = (out_thr == 4'd0 || out_thr > 4'd8) ? 4'd8 : out_thr;
 
-    wire tick = en && (dcnt == 16'd0);
+    // A tick waits for its instruction: with 4 engines sharing one fetch port this only
+    // happens when the tick period is under ~5 clocks or fetches collide.
+    wire at_zero = en && (dcnt == 16'd0);
+    wire tick = at_zero && ir_ok;
     wire exec = tick && (dly == 2'd0) && !waiting;
 
     /* verilator lint_off UNUSEDSIGNAL */
@@ -369,7 +373,7 @@ module pea_engine (
             end else if (tick) begin
                 facc <= fsum[7:0];
                 dcnt <= div_m1 + {15'd0, fsum[8]};
-            end else if (en) begin
+            end else if (en && !at_zero) begin
                 dcnt <= dcnt - 16'd1;
             end
         end
