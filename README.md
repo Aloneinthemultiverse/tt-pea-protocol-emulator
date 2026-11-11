@@ -81,7 +81,6 @@ How it got there: the first routable version used one 64:1 program-store read mu
 
 - **Clock target is 25 MHz** for the first hardening pass. The four engines share one program-store read port (round-robin, fetch only when the PC changes). A tick waits for its instruction, so timing stays exact for tick periods of about 5 clocks or more; shorter periods can add a clock of jitter when fetches collide.
 
-- **Not placed and routed.** The IHP area is an estimate: about 0.3 mm² of cells against about 1.0 mm² for 8x4 tiles. The Tiny Tapeout GDS flow has not been run yet.
 - **Low-speed USB and CAN:** the line-coding primitives (NRZI, stuffing, CRC, resync) are verified, but no complete USB or CAN stack has been written or tested.
 - **10 Mbit Ethernet is out of reach** for this version: the 4-byte FIFOs and the oversampled SPI host cannot carry 10 Mbit/s payloads.
 - I2C firmware is master-write only; read is not written yet.
