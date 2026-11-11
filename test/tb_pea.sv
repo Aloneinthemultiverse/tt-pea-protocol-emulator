@@ -170,6 +170,11 @@ module tb_pea;
     reg [7:0] q, q2;
     reg [15:0] cref;
     integer k;
+    // constrained-random regression (fixed seed, so every run is identical)
+    integer seed = 32'h5EA0_2027, it, bad, ne;
+    reg [7:0] rb [0:3];
+    reg [7:0] rt [0:3];
+    real err;
     initial begin
         s_tx[0] = 8'hC5; s_tx[1] = 8'h3A; s_tx[2] = 8'h00; s_tx[3] = 8'h00; s_miso = 1;
         #100 rst_n = 1; #200;
@@ -212,6 +217,16 @@ module tb_pea;
         erd(1, 4'hD, q); check(q === 8'hE1, "UART RX 3 percent fast");
         erd(1, 4'hD, q); check(q === 8'h18, "UART RX 3 percent slow");
         erd(1, 4'hE, q); check(q[3] === 1'b1, "UART RX FIFO empty after reads");
+        // random bytes, each at a random baud error within +/-3 percent
+        bad = 0;
+        for (it = 0; it < 40; it = it + 1) begin
+            rb[0] = $random(seed);
+            err = 1.0 + (($random(seed) % 31) / 1000.0);
+            uart_send(rb[0], BIT * err);
+            erd(1, 4'hD, q);
+            if (q !== rb[0]) bad = bad + 1;
+        end
+        check(bad == 0, "UART RX 40 random bytes, random baud");
 
         // ===== SPI master: engine 2, SCK pin 2, MOSI pin 3, MISO pin 4
         pm_clear;
@@ -229,6 +244,19 @@ module tb_pea;
         erd(2, 4'hD, q); erd(2, 4'hD, q2);
         check(q === 8'hC5 && q2 === 8'h3A, "SPI MISO bytes 0xC5 0x3A");
         check(s_bits == 16 && line[2] === 1'b0, "SPI 16 clocks, SCK idles low");
+        // random full-duplex bursts: 4 random bytes each way, back to back
+        bad = 0;
+        for (it = 0; it < 12; it = it + 1) begin
+            for (ne = 0; ne < 4; ne = ne + 1) begin rb[ne] = $random(seed); rt[ne] = $random(seed); s_tx[ne] = rt[ne]; end
+            s_bits = 0; s_miso = rt[0][7];
+            for (ne = 0; ne < 4; ne = ne + 1) ecfg(2, 4'hD, rb[ne]);
+            #14000;
+            for (ne = 0; ne < 4; ne = ne + 1) begin
+                erd(2, 4'hD, q);
+                if (s_rx[ne] !== rb[ne] || q !== rt[ne]) bad = bad + 1;
+            end
+        end
+        check(bad == 0, "SPI 48 random bytes each way");
 
         // ===== I2C master: engine 3, open-drain SDA pin 5, SCL pin 6
         pm_clear;
