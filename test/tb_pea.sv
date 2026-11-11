@@ -657,7 +657,7 @@ module tb_pea;
         pm[41] = 16'h0018;
         pm_load;
         wr(7'h08, 8'hFB); wr(7'h06, 8'h60); wr(7'h07, 8'h6D); #200;
-        s_bits = 0; s_mode = 0; s_tx[0] = 8'h96; s_tx[1] = 8'h0F; s_miso = 1;
+        urx_sel = 0; s_bits = 0; s_mode = 0; s_tx[0] = 8'h96; s_tx[1] = 8'h0F; s_miso = 1;
         i_n = 0; i_rd = 0; i_stop = 0; i_stretches = 0;
         esetup(0, 16'd217, 8'd3, 8'h00, 8'h00, 8'h00, 6'd0, 6'd4, 8'h02, 6'd0);
         esetup(1, 16'd217, 8'd3, 8'h01, 8'h00, 8'h00, 6'd8, 6'd13, 8'h01, 6'd8);
