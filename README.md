@@ -64,6 +64,19 @@ Run the full suite: `python test/gen_tb.py` builds `test/tb_pea.sv` (firmware em
 | `+A`, `+B`, `+C` | `{crc_width-1, stuff_n}`, CRC polynomial low, high |
 | `+D`, `+E`, `+F` | FIFO (write TX / read RX), FIFO status, PC (write = jump) |
 
+## Silicon flow results (IHP sg13cmos5l, Tiny Tapeout flow, 8x4 tiles)
+
+| Check | Result |
+|---|---|
+| GDS (LibreLane place-and-route) | passed |
+| Gate-level simulation (cocotb on the routed netlist) | passed |
+| Tiny Tapeout precheck | **passed** |
+| Placement utilization | 24.4% of the 8x4 core area |
+| Detailed routing | 0 violations |
+| Clock | 25 MHz, setup and hold met in all corners |
+
+How it got there: the first routable version used one 64:1 program-store read mux per engine and never finished detailed routing within 6 hours. One shared round-robin read port cut the core from 12,591 to 6,165 cells and the design from 25,699 to 19,341, and it then routed in about 2 hours.
+
 ## Limits (stated plainly)
 
 - **Clock target is 25 MHz** for the first hardening pass. The four engines share one program-store read port (round-robin, fetch only when the PC changes). A tick waits for its instruction, so timing stays exact for tick periods of about 5 clocks or more; shorter periods can add a clock of jitter when fetches collide.
@@ -72,7 +85,7 @@ Run the full suite: `python test/gen_tb.py` builds `test/tb_pea.sv` (firmware em
 - **Low-speed USB and CAN:** the line-coding primitives (NRZI, stuffing, CRC, resync) are verified, but no complete USB or CAN stack has been written or tested.
 - **10 Mbit Ethernet is out of reach** for this version: the 4-byte FIFOs and the oversampled SPI host cannot carry 10 Mbit/s payloads.
 - I2C firmware is master-write only; read is not written yet.
-- No formal verification or randomized tests yet; tests are directed.
+- Constrained-random tests cover UART RX (random bytes at random baud error) and SPI (random full-duplex bursts). No formal verification yet.
 
 ## AI use
 
