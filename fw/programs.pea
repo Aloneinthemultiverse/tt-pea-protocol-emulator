@@ -98,3 +98,63 @@ fin:    set ctl 0
         push
         set flag 9                  ; flag 1 = 1
         jmp rx
+
+.program spi_mode2
+; SPI master, mode 2 (CPOL=1, CPHA=0): mode 0 with the clock inverted. SCK idles high.
+        out pins 1      side 1
+        in pins 1       side 0
+
+.program spi_mode1
+; SPI master, mode 1 (CPOL=0, CPHA=1): data changes on the rising edge, sampled on the falling
+; edge. An explicit loop keeps SCK low while waiting for data. Autopush, no autopull.
+        pull            side 0
+        set x 7         side 0
+bit:    out pins 1      side 1
+        in pins 1       side 0
+        jmp x-- bit     side 0
+
+.program spi_mode3
+; SPI master, mode 3 (CPOL=1, CPHA=1): mode 1 with the clock inverted. SCK idles high.
+        pull            side 1
+        set x 7         side 1
+bit:    out pins 1      side 0
+        in pins 1       side 1
+        jmp x-- bit     side 1
+
+.program i2c_read
+; I2C master read with clock stretching. Tick = quarter bit. SDA = pin 5, SCL = pin 6 (side).
+; Host sends n-1, then the address byte with R/W = 1. RX FIFO gets the address ACK bit
+; (0 = ACK), then n data bytes. The master ACKs every byte except the last, which it NACKs.
+start:  pull
+        mov x osr
+        set pins 0      [1]         ; START
+        pull            side 0
+        set y 7
+abit:   out pins 1      side 0
+        wait 1 pin 6    side 1
+        nop
+        jmp y-- abit    side 0
+        set pins 1      side 0      ; release SDA for the address ACK
+        wait 1 pin 6    side 1
+        in pins 1
+        push noblock    side 0
+rbyte:  set y 7         side 0
+rbit:   nop             side 0      ; the slave drives SDA while SCL is low
+        wait 1 pin 6    side 1
+        in pins 1
+        jmp y-- rbit    side 0
+        push noblock    side 0
+        jmp !x nack     side 0
+        set pins 0      side 0      ; ACK
+        wait 1 pin 6    side 1
+        nop
+        nop             side 0
+        set pins 1      side 0      ; release SDA after SCL falls
+        jmp x-- rbyte   side 0
+nack:   wait 1 pin 6    side 1      ; SDA released: NACK
+        nop
+        nop             side 0
+        set pins 0      side 0      ; SDA low while SCL low, then STOP
+        nop             side 1 [1]
+        set pins 1      [1]
+        jmp start

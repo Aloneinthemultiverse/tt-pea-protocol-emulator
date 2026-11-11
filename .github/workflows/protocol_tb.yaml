@@ -1,0 +1,11 @@
+name: protocol_tb
+on: [push, workflow_dispatch]
+jobs:
+  protocol_tb:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq iverilog
+      - run: python3 test/gen_tb.py
+      - run: iverilog -g2012 -o sim test/tb_pea.sv src/*.v && vvp -n sim | tee sim.log
+      - run: "! grep -q FAIL sim.log"

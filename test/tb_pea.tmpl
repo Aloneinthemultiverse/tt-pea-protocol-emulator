@@ -98,35 +98,52 @@ module tb_pea;
         end
     endtask
 
-    // ---------------- SPI slave model (mode 0, MSB first)
+    // ---------------- SPI slave model (all four modes, MSB first; s_mode = {CPOL, CPHA})
     reg [7:0] s_rx [0:3];
     reg [7:0] s_tx [0:3];
     reg [7:0] s_sh;
+    reg [1:0] s_mode = 0;
     integer s_bits = 0;
-    always @(posedge line[2]) begin
+    wire s_ck = line[2] ^ s_mode[1];             // leading edge is always a rising s_ck
+    task s_sample; begin
         s_sh = {s_sh[6:0], line[3]};
         s_bits = s_bits + 1;
         if (s_bits % 8 == 0) s_rx[s_bits / 8 - 1] = s_sh;
-    end
-    always @(negedge line[2]) s_miso = s_tx[(s_bits / 8) % 4][7 - (s_bits % 8)];
+    end endtask
+    task s_drive; s_miso = s_tx[(s_bits / 8) % 4][7 - (s_bits % 8)]; endtask
+    always @(posedge s_ck) if (s_mode[0]) s_drive; else s_sample;
+    always @(negedge s_ck) if (s_mode[0]) s_sample; else s_drive;
 
-    // ---------------- I2C slave model: ACKs byte 0, NACKs byte 1, stretches the clock
+    // ---------------- I2C slave model: write (ACKs byte 0, NACKs byte 1, stretches the clock)
+    // and read (address LSB = 1: sends i_dat[], records the master ACK/NACK in i_mack[])
     reg [7:0] i_rx [0:3];
+    reg [7:0] i_dat [0:3];
     reg [7:0] i_sh;
-    integer i_bit = 0, i_n = 0, i_stretches = 0;
-    reg i_active = 0, i_stop = 0;
+    reg [3:0] i_mack;
+    integer i_bit = 0, i_n = 0, i_k = 0, i_stretches = 0;
+    reg i_active = 0, i_stop = 0, i_rd = 0;
     always @(negedge sda) if (scl) begin i_active = 1; i_bit = 0; end
     always @(posedge sda) if (scl && i_active) begin i_active = 0; i_stop = 1; end
     always @(posedge scl) if (i_active) begin
         if (i_bit < 8) begin i_sh = {i_sh[6:0], sda}; i_bit = i_bit + 1; end
-        else begin i_rx[i_n] = i_sh; i_n = i_n + 1; i_bit = 9; end
+        else if (i_rd) begin                     // master ACK (0) or NACK (1) after a read byte
+            i_mack[i_k] = sda; i_k = i_k + 1; if (sda) i_rd = 0; i_bit = 9;
+        end else begin
+            i_rx[i_n] = i_sh; i_n = i_n + 1; i_bit = 9;
+            if (i_n == 1 && i_sh[0]) i_rd = 1;   // read address: slave transmits next
+        end
     end
     always @(negedge scl) if (i_active) begin
         if (i_bit == 8) begin
-            sl_sda_low = (i_n == 0);             // ACK the first byte only
-            sl_scl_low = 1; i_stretches = i_stretches + 1;
-            #3000 sl_scl_low = 0;                // hold SCL low: clock stretching
-        end else if (i_bit == 9) begin sl_sda_low = 0; i_bit = 0; end
+            if (i_rd) sl_sda_low = 0;            // release SDA for the master's ACK
+            else begin
+                sl_sda_low = (i_n == 0);         // ACK the first byte only
+                sl_scl_low = 1; i_stretches = i_stretches + 1;
+                #3000 sl_scl_low = 0;            // hold SCL low: clock stretching
+            end
+        end else if (i_bit == 9) begin
+            sl_sda_low = i_rd ? !i_dat[i_k][7] : 1'b0; i_bit = 0;
+        end else if (i_rd && i_bit > 0) sl_sda_low = !i_dat[i_k][7 - i_bit];
     end
 
     // ---------------- NRZI / bit stuffing / CRC-16 reference
@@ -244,21 +261,65 @@ module tb_pea;
             end
         end
         check(bad == 0, "SPI 48 random bytes each way");
+        // SPI modes 1-3: 4 random bytes each way per mode, SCK idle level checked
+        pm_clear;
+//@PROG spi_mode2 2
+//@PROG spi_mode1 4
+//@PROG spi_mode3 9
+        pm_load;
+        for (it = 1; it < 4; it = it + 1) begin
+            wr(7'h00, 8'h00);
+            s_mode = it; wr(7'h08, it[1] ? 8'hFF : 8'hFB);
+            if (it == 2) esetup(2, 16'd5, 8'd0, 8'h1C, 8'h10, 8'h00, 6'd2, 6'd3, 8'h0C, 6'd2);
+            else if (it == 1) esetup(2, 16'd5, 8'd0, 8'h1C, 8'h10, 8'h00, 6'd4, 6'd8, 8'h04, 6'd4);
+            else esetup(2, 16'd5, 8'd0, 8'h1C, 8'h10, 8'h00, 6'd9, 6'd13, 8'h04, 6'd9);
+            for (ne = 0; ne < 4; ne = ne + 1) begin rb[ne] = $random(seed); rt[ne] = $random(seed); s_tx[ne] = rt[ne]; end
+            #200; s_bits = 0; s_miso = rt[0][7];
+            wr(7'h00, 8'h04);
+            for (ne = 0; ne < 4; ne = ne + 1) ecfg(2, 4'hD, rb[ne]);
+            #20000;
+            bad = 0;
+            for (ne = 0; ne < 4; ne = ne + 1) begin
+                erd(2, 4'hD, q);
+                if (s_rx[ne] !== rb[ne] || q !== rt[ne]) bad = bad + 1;
+            end
+            if (s_bits != 32 || line[2] !== it[1]) bad = bad + 1;
+            check(bad == 0, it == 1 ? "SPI mode 1: 4 random bytes each way" :
+                            it == 2 ? "SPI mode 2: 4 random bytes each way" :
+                                      "SPI mode 3: 4 random bytes each way");
+        end
+        wr(7'h00, 8'h00); s_mode = 0;
 
         // ===== I2C master: engine 3, open-drain SDA pin 5, SCL pin 6
         pm_clear;
 //@PROG i2c_master 0
         pm_load;
         wr(7'h08, 8'hFF); wr(7'h06, 8'h60); wr(7'h07, 8'h60);
-        esetup(3, 16'd25, 8'd0, 8'h2D, 8'h35, 8'h08, 6'd0, 6'd63, 8'h00, 6'd0);
+        esetup(3, 16'd32, 8'd0, 8'h2D, 8'h35, 8'h08, 6'd0, 6'd63, 8'h00, 6'd0);   // 390 kHz
         wr(7'h00, 8'h08);
         ecfg(3, 4'hD, 8'h01); ecfg(3, 4'hD, 8'hA6); ecfg(3, 4'hD, 8'h5D);
         #120000;
-        check(i_n == 2 && i_rx[0] === 8'hA6 && i_rx[1] === 8'h5D, "I2C bytes 0xA6 0x5D");
+        check(i_n == 2 && i_rx[0] === 8'hA6 && i_rx[1] === 8'h5D, "I2C 400k write bytes 0xA6 0x5D");
         erd(3, 4'hD, q); erd(3, 4'hD, q2);
         check(q === 8'h00 && q2 === 8'h01, "I2C ACK then NACK captured");
         check(i_stretches == 2 && i_stop === 1'b1, "I2C clock stretch and STOP");
         check(sda === 1'b1 && scl === 1'b1, "I2C bus released");
+        // I2C read at 100 kHz: address 0x53 + R, 3 bytes, master ACK ACK NACK
+        wr(7'h00, 8'h00);
+        pm_clear;
+//@PROG i2c_read 0
+        pm_load;
+        i_dat[0] = 8'h3C; i_dat[1] = 8'hF0; i_dat[2] = 8'h81;
+        i_n = 0; i_k = 0; i_rd = 0; i_stop = 0; i_mack = 4'hF;
+        esetup(3, 16'd125, 8'd0, 8'h2D, 8'h35, 8'h08, 6'd0, 6'd32, 8'h00, 6'd0);
+        wr(7'h00, 8'h08);
+        ecfg(3, 4'hD, 8'h02); ecfg(3, 4'hD, 8'hA7);
+        #500000;
+        erd(3, 4'hD, q); check(q === 8'h00 && i_rx[0] === 8'hA7, "I2C read: address 0xA7 ACKed");
+        erd(3, 4'hD, q); erd(3, 4'hD, q2); erd(3, 4'hD, mon);
+        check(q === 8'h3C && q2 === 8'hF0 && mon === 8'h81, "I2C 100k read 0x3C 0xF0 0x81");
+        check(i_k == 3 && i_mack[2:0] === 3'b100, "I2C read: master ACK ACK NACK");
+        check(i_stop === 1'b1 && sda === 1'b1 && scl === 1'b1, "I2C read: STOP, bus released");
 
         // ===== NRZI + bit stuffing + CRC-16: engine 0 transmits, engine 1 receives, pin 7
         pm_clear;
