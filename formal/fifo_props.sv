@@ -1,12 +1,13 @@
 // Formal properties for pea_fifo (4-deep). Inputs are unconstrained.
 module fifo_props (input wire clk, input wire push, input wire pop, input wire [7:0] din);
     reg rst_n = 0;
-    always @(posedge clk) rst_n <= 1;
+    reg ok = 0;                                 // one full clock after reset released
+    always @(posedge clk) begin rst_n <= 1; ok <= rst_n; end
     wire [7:0] dout; wire full, empty;
     pea_fifo dut (.clk(clk), .rst_n(rst_n), .push(push), .din(din), .pop(pop),
                   .dout(dout), .full(full), .empty(empty));
     wire [2:0] count = dut.wp - dut.rp;
-    always @* if (rst_n) begin
+    always @* if (ok) begin
         assert (count <= 3'd4);                  // never overflows or underflows
         assert (full  == (count == 3'd4));
         assert (empty == (count == 3'd0));
@@ -26,10 +27,10 @@ module fifo_props (input wire clk, input wire push, input wire pop, input wire [
             else ahead <= ahead - 3'd1;
         end
     end
-    always @* if (rst_n && tracking) begin
+    always @* if (ok && tracking) begin
         assert (ahead < count);
         assert (dut.mem[dut.rp[1:0] + ahead[1:0]] == tag);
         if (ahead == 0) assert (dout == tag);    // comes out unchanged and in order
     end
-    always @* if (rst_n) cover (seen);
+    always @* if (ok) cover (seen);
 endmodule
