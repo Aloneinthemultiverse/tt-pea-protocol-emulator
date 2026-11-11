@@ -158,3 +158,38 @@ nack:   wait 1 pin 6    side 1      ; SDA released: NACK
         nop             side 1 [1]
         set pins 1      [1]
         jmp start
+
+.program jtag
+; JTAG master: TCK = side pin, out pins 2 = {TMS, TDI} (bit 0 TDI, bit 1 TMS), TDO = in pin.
+; Every host byte is 4 TCK cycles, LSB first, so the host walks the full TAP state machine.
+; Every 8 cycles one TDO byte is pushed (blocking: TCK stops low until the host reads).
+start:  set y 7
+bit:    out pins 2      side 0
+        in pins 1       side 1
+        jmp y-- bit     side 1
+        push            side 0
+
+.program swd_read
+; SWD read transaction: SWCLK = side pin, SWDIO = one pin (set/out/in base, direction flips).
+; Host sends the 8-bit request. RX FIFO: ACK in bits 7:5, 4 data bytes LSB first, parity in bit 7.
+start:  pull            side 0
+        set pindirs 1   side 0
+        set y 7
+req:    out pins 1      side 0
+        jmp y-- req     side 1
+        set pindirs 0   side 0      ; turnaround: release SWDIO
+        nop             side 1
+        set y 2         side 0
+ack:    in pins 1       side 0
+        jmp y-- ack     side 1
+        push            side 0
+        set x 3
+dbyte:  set y 7
+dbit:   in pins 1       side 0
+        jmp y-- dbit    side 1
+        push            side 0
+        jmp x-- dbyte   side 0
+        in pins 1       side 0      ; parity
+        nop             side 1      ; turnaround back to the host
+        push            side 0
+        set pindirs 1   side 0

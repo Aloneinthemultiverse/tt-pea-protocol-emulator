@@ -16,8 +16,10 @@ module tb_pea;
     reg  s_miso = 1, sl_sda_low = 0, sl_scl_low = 0;
     wire sda = line[5] & ~sl_sda_low;
     wire scl = line[6] & ~sl_scl_low;
-    wire [7:0] uio_in = {nrzi_sel ? tb_nrzi : line[7], scl, sda, s_miso, line[3], line[2],
-                         urx_sel ? tb_utx : line[0], line[0]};
+    reg  jtag_sel = 0, swd_sel = 0, tdo = 0, sw_drive = 0, sw_bit = 1;
+    wire swdio = sw_drive ? sw_bit : line[1];
+    wire [7:0] uio_in = {nrzi_sel ? tb_nrzi : line[7], scl, sda, jtag_sel ? tdo : s_miso, line[3], line[2],
+                         swd_sel ? swdio : urx_sel ? tb_utx : line[0], line[0]};
 
     tt_um_auralis_pea dut (.ui_in({5'd0, mosi, csn, sclk}), .uo_out(uo_out), .uio_in(uio_in),
                            .uio_out(uio_out), .uio_oe(uio_oe), .ena(1'b1), .clk(clk), .rst_n(rst_n));
@@ -145,6 +147,58 @@ module tb_pea;
             sl_sda_low = i_rd ? !i_dat[i_k][7] : 1'b0; i_bit = 0;
         end else if (i_rd && i_bit > 0) sl_sda_low = !i_dat[i_k][7 - i_bit];
     end
+
+    // ---------------- JTAG TAP model (IEEE 1149.1 state machine, 4-bit IR, IDCODE + BYPASS)
+    // TCK pin 0, TDI pin 1, TMS pin 2, TDO -> pin 4
+    localparam [31:0] IDCODE = 32'h1BEEF0D3;
+    reg [3:0] tap = 0, ir = 4'h1, irsh = 0;
+    reg [31:0] drsh = 0;
+    wire tms = line[2], tdi = line[1];
+    always @(posedge line[0]) if (jtag_sel) begin
+        case (tap)
+            4'd0: ir = 4'h1;                                    // Test-Logic-Reset: IDCODE
+            4'd3: drsh = (ir == 4'h1) ? IDCODE : 32'd0;         // Capture-DR
+            4'd4: drsh = (ir == 4'h1) ? {tdi, drsh[31:1]} : {31'd0, tdi};   // Shift-DR
+            4'd10: irsh = 4'b0001;                              // Capture-IR
+            4'd11: irsh = {tdi, irsh[3:1]};                     // Shift-IR
+            4'd15: ir = irsh;                                   // Update-IR
+            default: ;
+        endcase
+        case (tap)
+            4'd0: tap = tms ? 4'd0 : 4'd1;    4'd1: tap = tms ? 4'd2 : 4'd1;
+            4'd2: tap = tms ? 4'd9 : 4'd3;    4'd3: tap = tms ? 4'd5 : 4'd4;
+            4'd4: tap = tms ? 4'd5 : 4'd4;    4'd5: tap = tms ? 4'd8 : 4'd6;
+            4'd6: tap = tms ? 4'd7 : 4'd6;    4'd7: tap = tms ? 4'd8 : 4'd4;
+            4'd8: tap = tms ? 4'd2 : 4'd1;    4'd9: tap = tms ? 4'd0 : 4'd10;
+            4'd10: tap = tms ? 4'd12 : 4'd11; 4'd11: tap = tms ? 4'd12 : 4'd11;
+            4'd12: tap = tms ? 4'd15 : 4'd13; 4'd13: tap = tms ? 4'd14 : 4'd13;
+            4'd14: tap = tms ? 4'd15 : 4'd11; default: tap = tms ? 4'd2 : 4'd1;
+        endcase
+    end
+    always @(negedge line[0]) if (jtag_sel) tdo = (tap == 4'd11) ? irsh[0] : drsh[0];
+
+    // ---------------- SWD target model: SWCLK pin 0, SWDIO pin 1. Answers a read with ACK OK.
+    localparam [31:0] SWD_DATA = 32'h2BA01477;
+    reg [7:0] sw_req = 0;
+    integer sw_r = 0;
+    always @(posedge line[0]) if (swd_sel) begin
+        if (sw_r < 8) sw_req = {line[1], sw_req[7:1]};
+        if (sw_r == 8) begin sw_drive = 1; sw_bit = 1; end           // ACK = 001, LSB first
+        else if (sw_r == 9 || sw_r == 10) sw_bit = 0;
+        else if (sw_r >= 11 && sw_r <= 42) sw_bit = SWD_DATA[sw_r - 11];
+        else if (sw_r == 43) sw_bit = ^SWD_DATA;                    // parity
+        else if (sw_r == 44) sw_drive = 0;                          // turnaround
+        sw_r = sw_r + 1;
+    end
+
+    // JTAG host-side cycle list
+    reg [7:0] jtx [0:17];
+    reg [71:0] jtdo;
+    reg [7:0] jpat = 8'b1011_0010;
+    integer nc;
+    task jc(input m, input d); begin
+        jtx[nc / 4][2 * (nc % 4) +: 2] = {m, d}; nc = nc + 1;
+    end endtask
 
     // ---------------- NRZI / bit stuffing / CRC-16 reference
     real NB = 240.0;                             // 12 clocks per bit
@@ -359,8 +413,57 @@ module tb_pea;
         check({q2, q} === cref, "CRC-16 of RX matches reference");
         rd(7'h01, q); check(q === 8'h00, "no FIFO overruns, no IRQs");
 
+        // ===== JTAG: engine 0, TCK pin 0, TDI pin 1, TMS pin 2, TDO pin 4
+        wr(7'h00, 8'h00);
+        pm_clear;
+//@PROG jtag 0
+//@PROG swd_read 8
+        pm_load;
+        jtag_sel = 1; wr(7'h08, 8'h00); wr(7'h07, 8'h07); #200; tap = 0;
+        // cycle list {TMS, TDI}: reset, IDCODE DR scan, IR scan (BYPASS), 8-bit DR scan via bypass
+        nc = 0;
+        for (ne = 0; ne < 5; ne = ne + 1) jc(1, 0);
+        jc(0, 0);
+        jc(1, 0); jc(0, 0); jc(0, 0);
+        for (ne = 0; ne < 32; ne = ne + 1) jc(ne == 31, 0);
+        jc(1, 0); jc(0, 0);
+        jc(1, 0); jc(1, 0); jc(0, 0); jc(0, 0);
+        for (ne = 0; ne < 4; ne = ne + 1) jc(ne == 3, 1);
+        jc(1, 0); jc(0, 0);
+        jc(1, 0); jc(0, 0); jc(0, 0);
+        for (ne = 0; ne < 8; ne = ne + 1) jc(ne == 7, jpat[ne]);
+        jc(1, 0); jc(0, 0);
+        while (nc < 72) jc(0, 0);
+        esetup(0, 16'd5, 8'd0, 8'h0C, 8'h00, 8'h00, 6'd0, 6'd4, 8'h0B, 6'd0);
+        wr(7'h00, 8'h01);
+        for (it = 0; it < 9; it = it + 1) begin
+            ecfg(0, 4'hD, jtx[2 * it]); ecfg(0, 4'hD, jtx[2 * it + 1]);
+            #4000; erd(0, 4'hD, q); jtdo[8 * it +: 8] = q;
+        end
+        check(jtdo[40:9] === IDCODE, "JTAG IDCODE read 0x1BEEF0D3");
+        check(jtdo[50:47] === 4'b0001 && ir === 4'hF, "JTAG IR scan: capture 0001, BYPASS");
+        check(jtdo[56] === 1'b0 && jtdo[63:57] === jpat[6:0], "JTAG 8 bits through BYPASS");
+        check(tap === 4'd1 && line[0] === 1'b0, "JTAG back in Run-Test/Idle");
+        wr(7'h00, 8'h00); jtag_sel = 0;
+
+        // ===== SWD read: engine 1, SWCLK pin 0, SWDIO pin 1
+        swd_sel = 1; wr(7'h08, 8'h02); wr(7'h07, 8'h03); #200; sw_r = 0;
+        esetup(1, 16'd5, 8'd0, 8'h09, 8'h01, 8'h08, 6'd8, 6'd28, 8'h03, 6'd8);
+        wr(7'h00, 8'h02);
+        ecfg(1, 4'hD, 8'hA5);                    // DPIDR read: start, DP, read, A=0, parity, stop, park
+        #12000;
+        erd(1, 4'hD, q); erd(1, 4'hD, q2);
+        check(sw_req === 8'hA5 && q[7:5] === 3'b001, "SWD request 0xA5, ACK OK");
+        erd(1, 4'hD, mon); jtdo[7:0] = q2; jtdo[15:8] = mon;
+        #4000; erd(1, 4'hD, q); erd(1, 4'hD, q2); jtdo[23:16] = q; jtdo[31:24] = q2;
+        #4000; erd(1, 4'hD, q);
+        check(jtdo[31:0] === SWD_DATA, "SWD read data 0x2BA01477");
+        check(q[7] === ^SWD_DATA && sw_r == 45, "SWD parity and turnaround");
+        wr(7'h00, 8'h00); swd_sel = 0;
+        rd(7'h01, q); check(q === 8'h00, "JTAG/SWD: no FIFO overruns");
         if (fails == 0) $display("ALL TESTS PASSED (%0d checks)", checks);
         else $display("%0d of %0d checks FAILED", fails, checks);
+
         $finish;
     end
     initial begin #20000000; $display("FAIL timeout"); $finish; end
