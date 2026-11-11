@@ -198,7 +198,7 @@ module pea_core (
     endgenerate
     reg [1:0] gsel;
     reg       gany;
-    integer j;
+    integer j, r;                                  // j: arbiter (combinational), r: reset loop
     always @* begin
         gsel = rr; gany = 1'b0;
         for (j = 3; j >= 0; j = j - 1)
@@ -210,7 +210,7 @@ module pea_core (
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             ir_v <= 4'd0; rr <= 2'd0;
-            for (j = 0; j < 4; j = j + 1) begin ir_r[j] <= 16'd0; ir_pc[j] <= 6'd0; end
+            for (r = 0; r < 4; r = r + 1) begin ir_r[r] <= 16'd0; ir_pc[r] <= 6'd0; end
         end else if (pwrite) begin
             ir_v <= 4'd0;
         end else if (gany) begin
