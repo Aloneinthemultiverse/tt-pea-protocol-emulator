@@ -24,6 +24,37 @@ module pea_fifo (
             if (pop && !empty) rp <= rp + 3'd1;
         end
     end
+`ifdef FORMAL
+    // safety: occupancy stays 0..4 and the flags agree with it
+    wire [2:0] f_count = wp - rp;
+    reg f_ok = 0;
+    always @(posedge clk) f_ok <= rst_n;
+    always @* if (f_ok && rst_n) begin
+        assert (f_count <= 3'd4);
+        assert (full  == (f_count == 3'd4));
+        assert (empty == (f_count == 3'd0));
+        if (empty) assert (dout == 8'h00);
+    end
+    // integrity: one arbitrary tagged byte leaves unchanged and in order
+    (* anyconst *) reg [7:0] f_tag;
+    (* anyseq *)   reg       f_pick;
+    reg       f_trk = 0, f_seen = 0;
+    reg [2:0] f_ahead = 0;
+    always @(posedge clk) if (f_ok && rst_n) begin
+        if (!f_trk && !f_seen && f_pick && push && !full && din == f_tag) begin
+            f_trk <= 1'b1; f_ahead <= f_count - ((pop && !empty) ? 3'd1 : 3'd0);
+        end else if (f_trk && pop && !empty) begin
+            if (f_ahead == 3'd0) begin f_trk <= 1'b0; f_seen <= 1'b1; end
+            else f_ahead <= f_ahead - 3'd1;
+        end
+    end
+    always @* if (f_ok && rst_n && f_trk) begin
+        assert (f_ahead < f_count);
+        assert (mem[rp[1:0] + f_ahead[1:0]] == f_tag);
+        if (f_ahead == 3'd0) assert (dout == f_tag);
+    end
+    always @* cover (f_seen);
+`endif
 endmodule
 
 // Round-robin fetch arbiter: grants one requesting engine per clock, starting the search at
@@ -46,6 +77,27 @@ module pea_fetch_arb (
     always @(posedge clk or negedge rst_n)
         if (!rst_n) rr <= 2'd0;
         else if (gany && !hold) rr <= gsel + 2'd1;
+`ifdef FORMAL
+    reg f_ok = 0;
+    always @(posedge clk) f_ok <= rst_n;
+    always @* if (f_ok && rst_n) begin
+        assert (gany == |need);                  // work-conserving
+        if (gany) assert (need[gsel]);           // grants only a requester
+    end
+    // starvation freedom: a requester that keeps asking waits at most 3 other grants
+    genvar f_n;
+    generate for (f_n = 0; f_n < 4; f_n = f_n + 1) begin : fair
+        reg  [2:0] waits = 0;
+        wire [1:0] dist = f_n[1:0] - rr;
+        always @(posedge clk)
+            if (!rst_n || !need[f_n] || (gany && gsel == f_n && !hold)) waits <= 3'd0;
+            else if (gany && !hold) waits <= waits + 3'd1;
+        always @* if (f_ok && rst_n) begin
+            assert (waits <= 3'd3);
+            if (waits != 3'd0) assert (waits + {1'b0, dist} <= 3'd3);
+        end
+    end endgenerate
+`endif
 endmodule
 
 module pea_core (
@@ -232,7 +284,6 @@ module pea_core (
             ir_v <= 4'd0;
         end else if (gany) begin
             ir_r[gsel] <= fdata; ir_pc[gsel] <= fpc; ir_v[gsel] <= 1'b1;
-            rr <= gsel + 2'd1;
         end
     end
 
