@@ -18,8 +18,11 @@ module tb_pea;
     wire scl = line[6] & ~sl_scl_low;
     reg  jtag_sel = 0, swd_sel = 0, tdo = 0, sw_drive = 0, sw_bit = 1;
     wire swdio = sw_drive ? sw_bit : line[1];
-    wire [7:0] uio_in = {nrzi_sel ? tb_nrzi : line[7], scl, sda, jtag_sel ? tdo : s_miso, line[3], line[2],
-                         swd_sel ? swdio : urx_sel ? tb_utx : line[0], line[0]};
+    reg  ext_sel = 0, m_sck = 0, m_csn = 1, m_mosi = 0;     // external SPI controller (target test)
+    wire [7:0] uio_in = {nrzi_sel ? tb_nrzi : line[7], scl, sda, jtag_sel ? tdo : s_miso, line[3],
+                         ext_sel ? m_mosi : line[2],
+                         ext_sel ? m_csn : swd_sel ? swdio : urx_sel ? tb_utx : line[0],
+                         ext_sel ? m_sck : line[0]};
 
     tt_um_auralis_pea dut (.ui_in({5'd0, mosi, csn, sclk}), .uo_out(uo_out), .uio_in(uio_in),
                            .uio_out(uio_out), .uio_oe(uio_oe), .ena(1'b1), .clk(clk), .rst_n(rst_n));
@@ -190,6 +193,14 @@ module tb_pea;
         else if (sw_r == 44) sw_drive = 0;                          // turnaround
         sw_r = sw_r + 1;
     end
+
+    // external SPI controller for the target test: 1 MHz, mode 0
+    task m_xfer(input [7:0] d, output [7:0] qq);
+        integer b;
+        for (b = 7; b >= 0; b = b - 1) begin
+            m_mosi = d[b]; #500; m_sck = 1; qq[b] = line[3]; #500; m_sck = 0;
+        end
+    endtask
 
     // JTAG host-side cycle list
     reg [7:0] jtx [0:17];
@@ -461,6 +472,58 @@ module tb_pea;
         check(q[7] === ^SWD_DATA && sw_r == 45, "SWD parity and turnaround");
         wr(7'h00, 8'h00); swd_sel = 0;
         rd(7'h01, q); check(q === 8'h00, "JTAG/SWD: no FIFO overruns");
+        // ===== concurrency: all four engines at once (UART TX -> UART RX loopback, SPI, I2C)
+        wr(7'h00, 8'h00);
+        pm_clear;
+//@PROG uart_tx 0
+//@PROG uart_rx 8
+//@PROG spi_master 16
+//@PROG i2c_master 24
+        pm_load;
+        wr(7'h08, 8'hFB); wr(7'h06, 8'h60); wr(7'h07, 8'h6D); #200;
+        s_bits = 0; s_mode = 0; s_tx[0] = 8'h96; s_tx[1] = 8'h0F; s_miso = 1;
+        i_n = 0; i_rd = 0; i_stop = 0; i_stretches = 0;
+        esetup(0, 16'd217, 8'd3, 8'h00, 8'h00, 8'h00, 6'd0, 6'd4, 8'h02, 6'd0);
+        esetup(1, 16'd217, 8'd3, 8'h01, 8'h00, 8'h00, 6'd8, 6'd13, 8'h01, 6'd8);
+        esetup(2, 16'd5, 8'd0, 8'h1C, 8'h10, 8'h00, 6'd16, 6'd17, 8'h0C, 6'd16);
+        esetup(3, 16'd32, 8'd0, 8'h2D, 8'h35, 8'h08, 6'd24, 6'd41, 8'h00, 6'd24);
+        ecfg(0, 4'hD, 8'h5A); ecfg(2, 4'hD, 8'hE4); ecfg(2, 4'hD, 8'h1B);
+        ecfg(3, 4'hD, 8'h01); ecfg(3, 4'hD, 8'hA6); ecfg(3, 4'hD, 8'h5D);
+        wr(7'h00, 8'h0F);                        // start all four engines together
+        #200000;
+        erd(1, 4'hD, q); check(q === 8'h5A, "Concurrent: UART TX->RX loopback 0x5A");
+        erd(2, 4'hD, q); erd(2, 4'hD, q2);
+        check(s_rx[0] === 8'hE4 && s_rx[1] === 8'h1B && q === 8'h96 && q2 === 8'h0F,
+              "Concurrent: SPI 2 bytes each way");
+        erd(3, 4'hD, q); erd(3, 4'hD, q2);
+        check(i_n == 2 && i_rx[1] === 8'h5D && q === 8'h00 && q2 === 8'h01, "Concurrent: I2C write + ACK/NACK");
+        rd(7'h01, q); check(q === 8'h00, "Concurrent: no overruns");
+        wr(7'h00, 8'h00);
+
+        // ===== SPI target: engine 0 is the slave; the testbench drives SCK pin 0, CSn pin 1,
+        // MOSI pin 2 and reads MISO on pin 3
+        pm_clear;
+//@PROG spi_target 0
+        pm_load;
+        ext_sel = 1; wr(7'h06, 8'h00); wr(7'h07, 8'h08); #200;
+        esetup(0, 16'd2, 8'd0, 8'h1A, 8'h00, 8'h01, 6'd2, 6'd6, 8'h0C, 6'd0);
+        bad = 0;
+        for (it = 0; it < 4; it = it + 1) begin
+            for (ne = 0; ne < 2; ne = ne + 1) begin rb[ne] = $random(seed); rt[ne] = $random(seed); end
+            if (it == 0) begin rb[0] = 8'hA1; rt[0] = 8'hC3; end
+            ecfg(0, 4'hD, rt[0]); ecfg(0, 4'hD, rt[1]);
+            if (it == 0) wr(7'h00, 8'h01);
+            #2000; m_csn = 0; #500;
+            m_xfer(rb[0], q); m_xfer(rb[1], q2);
+            #500; m_csn = 1; #2000;
+            if (q !== rt[0] || q2 !== rt[1]) bad = bad + 1;
+            erd(0, 4'hD, q); erd(0, 4'hD, q2);
+            if (q !== rb[0] || q2 !== rb[1]) bad = bad + 1;
+        end
+        check(bad == 0, "SPI target: 8 bytes each way, 1 MHz");
+        wr(7'h00, 8'h00); ext_sel = 0;
+        rd(7'h01, q); check(q === 8'h00, "SPI target: no overruns");
+
         if (fails == 0) $display("ALL TESTS PASSED (%0d checks)", checks);
         else $display("%0d of %0d checks FAILED", fails, checks);
 

@@ -193,3 +193,15 @@ dbit:   in pins 1       side 0
         nop             side 1      ; turnaround back to the host
         push            side 0
         set pindirs 1   side 0
+
+.program spi_target
+; SPI target (slave), mode 0, MSB first. Pins are inputs from the external controller:
+; SCK and CSn by absolute pin number in WAIT, MOSI = in pin, MISO = out pin, jmp pin = CSn.
+; Autopull/autopush 8. Entry at the first word (preloads MISO bit 7); wrap from `bit` to the end.
+        out pins 1                  ; first MISO bit, before the first SCK edge
+start:  wait 0 pin 1                ; CSn low
+bit:    wait 1 pin 0                ; SCK rises: sample MOSI
+        in pins 1
+        wait 0 pin 0                ; SCK falls: shift out the next MISO bit
+        out pins 1
+        jmp pin start               ; CSn high: transaction over
