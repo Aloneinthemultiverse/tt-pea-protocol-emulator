@@ -37,7 +37,7 @@ module tb_pea;
     wire [7:0] wf_bus = (uio_oe & uio_out) | (~uio_oe & uio_in);
     integer wf;
     initial wf = $fopen("waves.txt", "w");
-    always @(wf_bus) $fdisplay(wf, "%0d %h", $time, wf_bus);
+    always @(wf_bus or uio_oe) #0 $fdisplay(wf, "%0d %h %h", $time, wf_bus, uio_oe);
     task wmark(input [8*24-1:0] name);
         $fdisplay(wf, "M %0d %0s", $time, name);
     endtask
