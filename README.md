@@ -4,6 +4,15 @@ Spec: an open-source, general-purpose protocol emulator for the Jane Street / Ti
 
 How it was made: designed with the Auralis workflow. RTL was linted (Verilator `-Wall`), simulated (Icarus) and synthesized (Yosys) on the Auralis semiconductor server's EDA image; Laya gave the PASS/FIX verdict.
 
+## Documents
+
+- [Architecture and instruction set](docs/ARCHITECTURE.md)
+- [Verification write-up](docs/VERIFICATION.md) (includes AI use)
+- [Host setup](docs/HOST.md)
+- Assembler `fw/pea_asm.py`, example programs `fw/programs.pea`
+
+**Protocols verified:** UART (any baud, ±3 %), SPI controller modes 0–3, SPI target, I2C write and read at 100/400 kHz with clock stretching, JTAG (full TAP), SWD read, USB-style NRZI + bit stuffing + CRC-16, and four protocols running concurrently. 46/46 simulation checks, formal proofs of FIFO and fetch-arbiter correctness, gate-level test and precheck pass.
+
 ## Architecture
 
 ```
@@ -32,20 +41,9 @@ How it was made: designed with the Auralis workflow. RTL was linted (Verilator `
 | Only `X--`/`Y--` | Small ALU (add, sub, xor, and, shift, swap) and `X != Y` branch |
 | No trigger outputs | 8 shared flags, set/waited on by engines and the host, 6 visible on pins |
 
-## Blocks and verification
+## Verification
 
-| Block | File | What it does | Checks | Laya |
-|---|---|---|---|---|
-| Engine | `src/pea_engine.v` | Instruction execution, tick divider with resync, shifters, CRC, run counter, NRZI | exercised by all tests below | PASS (0.73) |
-| Core | `src/pea_core.v` | 4 engines, program store, FIFOs, pins, flags, SPI host port | host register read/write, flags on pins: 2/2 | PASS (0.73) |
-| UART firmware | `fw/programs.pea` `uart_tx`, `uart_rx` | 8N1 at 115200 baud; TX checked by an independent monitor; RX with loopback, external driver, ±3 % baud error | 7/7 | PASS (0.73) |
-| SPI firmware | `spi_master` | Mode 0 full duplex, 2 instructions per bit, against a slave model | 3/3 | PASS (0.73) |
-| I2C firmware | `i2c_master` | Open-drain master write, ACK and NACK capture, clock stretching, START/STOP, against a slave model | 4/4 | PASS (0.73) |
-| Line coding | `nrzi_tx`, `nrzi_rx` | NRZI + bit stuffing + CRC-16 both directions against a reference coder | 7/7 | PASS (0.73) |
-| **Top** | `src/tt_um_auralis_pea.v` | Tiny Tapeout wrapper | **23/23**, lint clean, synthesizes: 25,472 generic cells, 2,347 flip-flops | **PASS (0.73)** |
-
-Run the full suite: `python test/gen_tb.py` builds `test/tb_pea.sv` (firmware embedded), then
-`iverilog -g2012 -o sim test/tb_pea.sv src/*.v && vvp sim`.
+See [docs/VERIFICATION.md](docs/VERIFICATION.md). Run: `python test/gen_tb.py && iverilog -g2012 -o sim test/tb_pea.sv src/*.v && vvp sim`; formal: `cd formal && sby -f fifo.sby && sby -f arb.sby`.
 
 ## Register map (7-bit address)
 
@@ -79,13 +77,12 @@ How it got there: the first routable version used one 64:1 program-store read mu
 
 ## Limits (stated plainly)
 
-- **Clock target is 25 MHz** for the first hardening pass. The four engines share one program-store read port (round-robin, fetch only when the PC changes). A tick waits for its instruction, so timing stays exact for tick periods of about 5 clocks or more; shorter periods can add a clock of jitter when fetches collide.
-
-- **Low-speed USB and CAN:** the line-coding primitives (NRZI, stuffing, CRC, resync) are verified, but no complete USB or CAN stack has been written or tested.
-- **10 Mbit Ethernet is out of reach** for this version: the 4-byte FIFOs and the oversampled SPI host cannot carry 10 Mbit/s payloads.
-- I2C firmware is master-write only; read is not written yet.
-- Constrained-random tests cover UART RX (random bytes at random baud error) and SPI (random full-duplex bursts). No formal verification yet.
+- Clock target 25 MHz. Shared instruction fetch keeps timing exact for tick periods of about 5 clocks or more.
+- Low-speed USB and CAN: line-level primitives (NRZI, stuffing, CRC, resync) are verified; no complete stack yet.
+- 10 Mbit Ethernet is out of reach at 25 MHz with 4-byte FIFOs.
+- The engine is verified by simulation; formal proofs cover the FIFOs and the fetch arbiter.
+- Silicon has not been measured; all results are from simulation and the Tiny Tapeout flow.
 
 ## AI use
 
-Designed with AI assistance (Claude, driving the Auralis engineering workflow): architecture, RTL, assembler, firmware and tests were AI-written and checked by lint, simulation against independent protocol models, and synthesis.
+Built with an AI assistant (Anthropic Claude in Claude Code, driving the Auralis workflow). Details and how every claim was checked: [docs/VERIFICATION.md §7](docs/VERIFICATION.md#7-ai-use).
