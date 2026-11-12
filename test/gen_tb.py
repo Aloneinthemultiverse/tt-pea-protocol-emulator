@@ -20,7 +20,7 @@ for line in open(os.path.join(HERE, 'tb_pea.tmpl'), encoding='utf-8').read().spl
         out.append(line)
         continue
     base = int(m.group(2))
-    words, _ = pea_asm.assemble(progs[m.group(1)], base)
+    words, _ = pea_asm.assemble(progs[m.group(1)], base % 64)   # labels are bank-relative
     out.append('        // %s: %d words at %d' % (m.group(1), len(words), base))
     out += ["        pm[%d] = 16'h%04x;" % (base + i, w) for i, w in enumerate(words)]
 with open(os.path.join(HERE, 'tb_pea.sv'), 'w', encoding='utf-8', newline='\n') as f:

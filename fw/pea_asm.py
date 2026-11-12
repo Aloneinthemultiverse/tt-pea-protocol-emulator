@@ -18,6 +18,8 @@ ALU = {'addx': 0, 'addy': 1, 'addxy': 2, 'subxy': 3, 'xorxy': 4, 'andxy': 5, 'sh
 
 
 def assemble(text, base=0):
+    if not 0 <= base < 64:
+        raise SystemExit('base must be 0..63: jump targets are bank-relative (6 bits)')
     lines, labels = [], {}
     for raw in text.splitlines():
         line = raw.split(';')[0].strip()
