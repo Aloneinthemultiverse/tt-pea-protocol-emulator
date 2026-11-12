@@ -5,7 +5,7 @@ project:
   discord:      ""
   description:  "Four programmable protocol engines: UART, SPI, I2C and NRZI/bit-stuffed protocols in firmware"
   language:     "Verilog"
-  clock_hz:     25000000
+  clock_hz:     60000000
   tiles: "8x4"
   top_module:  "tt_um_auralis_pea"
   source_files:
