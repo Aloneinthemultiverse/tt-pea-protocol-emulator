@@ -18,10 +18,12 @@ module tb_pea;
     wire scl = line[6] & ~sl_scl_low;
     reg  jtag_sel = 0, swd_sel = 0, tdo = 0, sw_drive = 0, sw_bit = 1;
     wire swdio = sw_drive ? sw_bit : line[1];
+    reg  can_sel = 0, can_ack = 0, ow_sel = 0, ws_sel = 0;
+    wire can_bus = line[0] & ~can_ack;           // CAN bus: TX pin wired-AND with the receiver's ACK
     reg  ext_sel = 0, m_sck = 0, m_csn = 1, m_mosi = 0;     // external SPI controller (target test)
     wire [7:0] uio_in = {nrzi_sel ? tb_nrzi : line[7], scl, sda, jtag_sel ? tdo : s_miso, line[3],
                          ext_sel ? m_mosi : line[2],
-                         ext_sel ? m_csn : swd_sel ? swdio : urx_sel ? tb_utx : line[0],
+                         ext_sel ? m_csn : swd_sel ? swdio : can_sel ? can_bus : urx_sel ? tb_utx : line[0],
                          ext_sel ? m_sck : line[0]};
 
     tt_um_auralis_pea dut (.ui_in({5'd0, mosi, csn, sclk}), .uo_out(uo_out), .uio_in(uio_in),
@@ -202,6 +204,23 @@ module tb_pea;
         end
     endtask
 
+    // CAN host side: build SOF..data, send n-2 then the bits MSB first
+    reg [63:0] cf; integer cfn, cfb;
+    task can_send(input [10:0] id, input [3:0] dlc, input [15:0] d);
+        begin
+            cf = 0; cfn = 1;                                             // SOF = 0
+            for (cfb = 10; cfb >= 0; cfb = cfb - 1) begin cf[63 - cfn] = id[cfb]; cfn = cfn + 1; end
+            cfn = cfn + 3;                                               // RTR, IDE, r0 = 0
+            for (cfb = 3; cfb >= 0; cfb = cfb - 1) begin cf[63 - cfn] = dlc[cfb]; cfn = cfn + 1; end
+            for (cfb = 8 * dlc - 1; cfb >= 0; cfb = cfb - 1) begin cf[63 - cfn] = d[cfb]; cfn = cfn + 1; end
+            ecfg(0, 4'hD, cfn - 2);
+            for (cfb = 0; cfb < (cfn + 7) / 8; cfb = cfb + 1) begin
+                ecfg(0, 4'hD, cf[63 - 8 * cfb -: 8]);
+                if (cfb == 2) #8000;
+            end
+        end
+    endtask
+
     // JTAG host-side cycle list
     reg [7:0] jtx [0:17];
     reg [71:0] jtdo;
@@ -210,6 +229,72 @@ module tb_pea;
     task jc(input m, input d); begin
         jtx[nc / 4][2 * (nc % 4) +: 2] = {m, d}; nc = nc + 1;
     end endtask
+
+    // ---------------- WS2812 model: decode pulse widths on pin 0 (T0H 250-550 ns, T1H 650-950 ns)
+    reg [47:0] ws_bits; integer ws_n = 0, ws_bad = 0; realtime ws_t, ws_w;
+    always @(posedge line[0]) if (ws_sel) ws_t = $realtime;
+    always @(negedge line[0]) if (ws_sel) begin
+        ws_w = $realtime - ws_t;
+        ws_bits = {ws_bits[46:0], ws_w > 600};
+        if (!((ws_w >= 250 && ws_w <= 550) || (ws_w >= 650 && ws_w <= 950))) ws_bad = ws_bad + 1;
+        ws_n = ws_n + 1;
+    end
+
+    // ---------------- 1-Wire device model (pin 5, open drain): presence, Read ROM (0x33)
+    reg [63:0] ow_rom; reg [7:0] ow_cmd; reg ow_tx = 0;
+    integer ow_bits = 0, ow_k = 0, ow_resets = 0; realtime ow_t;
+    function [7:0] crc8(input [55:0] d);         // Dallas/Maxim CRC-8, LSB first
+        integer b; reg [7:0] c;
+        begin c = 0; for (b = 0; b < 56; b = b + 1) c = ((c[0] ^ d[b]) ? 8'h8C : 8'h00) ^ (c >> 1); crc8 = c; end
+    endfunction
+    always @(negedge line[5]) if (ow_sel) begin
+        ow_t = $realtime;
+        if (ow_tx && !ow_rom[ow_k]) begin sl_sda_low = 1; #30000 sl_sda_low = 0; end
+    end
+    always @(posedge line[5]) if (ow_sel) begin
+        if ($realtime - ow_t > 400000) begin
+            ow_bits = 0; ow_tx = 0; ow_k = 0; ow_resets = ow_resets + 1;
+            #30000 sl_sda_low = 1; #120000 sl_sda_low = 0;            // presence pulse
+        end else if (ow_tx) ow_k = ow_k + 1;
+        else begin
+            ow_cmd = {($realtime - ow_t) < 15000, ow_cmd[7:1]}; ow_bits = ow_bits + 1;
+            if (ow_bits == 8 && ow_cmd == 8'h33) begin ow_tx = 1; ow_k = 0; end
+        end
+    end
+
+    // ---------------- CAN receiver model: 500 kbit/s, hard sync on SOF, destuff, CRC-15, ACK
+    reg [127:0] cb; integer c_frames = 0, c_crcok = 0, c_stuffs = 0, c_serr = 0;
+    reg [10:0] c_id; reg [3:0] c_dlc; reg [15:0] c_data; reg c_busy = 0;
+    integer ck, crun, cnb; reg clast, cbit; reg [14:0] crc_rx;
+    function [14:0] crc15(input [127:0] bits, input integer n);
+        integer b; reg [14:0] c;
+        begin c = 0; for (b = 0; b < n; b = b + 1) c = {c[13:0], 1'b0} ^ ((c[14] ^ bits[b]) ? 15'h4599 : 15'h0); crc15 = c; end
+    endfunction
+    always @(negedge can_bus) if (can_sel && !c_busy) begin
+        c_busy = 1; ck = 0; crun = 0; clast = 1; cnb = 0;
+        #1000;
+        while (cnb == 0 || ck < cnb) begin
+            cbit = can_bus;
+            if (crun == 5) begin if (cbit == clast) c_serr = c_serr + 1; c_stuffs = c_stuffs + 1; crun = 1; clast = cbit; end
+            else begin
+                if (cbit == clast) crun = crun + 1; else begin crun = 1; clast = cbit; end
+                cb[ck] = cbit; ck = ck + 1;
+                if (ck == 19) begin c_dlc = {cb[15], cb[16], cb[17], cb[18]}; cnb = 19 + 8 * c_dlc + 15; end
+            end
+            #2000;
+        end
+        if (crun == 5) begin cbit = can_bus; if (cbit == clast) c_serr = c_serr + 1; c_stuffs = c_stuffs + 1; #2000; end
+        for (ck = 0; ck < 11; ck = ck + 1) c_id[10 - ck] = cb[1 + ck];
+        c_data = 0;
+        for (ck = 0; ck < 8 * c_dlc; ck = ck + 1) c_data[8 * c_dlc - 1 - ck] = cb[19 + ck];
+        for (ck = 0; ck < 15; ck = ck + 1) crc_rx[14 - ck] = cb[19 + 8 * c_dlc + ck];
+        c_frames = c_frames + 1;
+        if (crc_rx == crc15(cb, 19 + 8 * c_dlc) && can_bus === 1'b1) begin   // CRC ok, delimiter recessive
+            c_crcok = c_crcok + 1;
+            #1000 can_ack = 1; #2000 can_ack = 0;
+        end
+        #30000 c_busy = 0;
+    end
 
     // ---------------- NRZI / bit stuffing / CRC-16 reference
     real NB = 240.0;                             // 12 clocks per bit
@@ -707,10 +792,149 @@ module tb_pea;
         wr(7'h00, 8'h00); ext_sel = 0;
         rd(7'h01, q); check(q === 8'h00, "SPI target: no overruns");
 
+        // ===== WS2812: engine 0, data on pin 0, two LEDs (48 bits)
+        wr(7'h00, 8'h00); pm_clear;
+        // ws2812: 4 words at 0
+        pm[0] = 16'h7441;
+        pm[1] = 16'h1a43;
+        pm[2] = 16'h1c00;
+        pm[3] = 16'hb482;
+        pm_load;
+        wr(7'h06, 8'h00); wr(7'h08, 8'h00); wr(7'h07, 8'h01); #500;
+        ws_sel = 1; ws_n = 0; ws_bad = 0;
+        esetup(0, 16'd7, 8'd208, 8'h00, 8'h00, 8'h00, 6'd0, 6'd3, 8'h08, 6'd0);
+        ecfg(0, 4'hD, 8'h12); ecfg(0, 4'hD, 8'h34); ecfg(0, 4'hD, 8'h56); ecfg(0, 4'hD, 8'hAB);
+        wr(7'h00, 8'h01);
+        #20000; ecfg(0, 4'hD, 8'hCD); ecfg(0, 4'hD, 8'hEF);
+        #80000;
+        check(ws_n == 48 && ws_bits === 48'h123456ABCDEF, "WS2812: 2 LEDs, 48 bits decoded");
+        check(ws_bad == 0 && line[0] === 1'b0, "WS2812: pulse widths in spec, latch low");
+        wr(7'h00, 8'h00); ws_sel = 0;
+
+        // ===== 1-Wire: engine 0, open-drain pin 5, device model answers Read ROM
+        pm_clear;
+        // onewire: 20 words at 0
+        pm[0] = 16'hc000;
+        pm[1] = 16'hc0a7;
+        pm[2] = 16'h0702;
+        pm[3] = 16'hc001;
+        pm[4] = 16'hc085;
+        pm[5] = 16'h0705;
+        pm[6] = 16'h4001;
+        pm[7] = 16'h8040;
+        pm[8] = 16'hc0a7;
+        pm[9] = 16'h0709;
+        pm[10] = 16'h6041;
+        pm[11] = 16'hc000;
+        pm[12] = 16'h004e;
+        pm[13] = 16'hc001;
+        pm[14] = 16'ha082;
+        pm[15] = 16'h4001;
+        pm[16] = 16'hc683;
+        pm[17] = 16'h0711;
+        pm[18] = 16'hc001;
+        pm[19] = 16'ha682;
+        pm_load;
+        sl_sda_low = 0; ow_rom[55:0] = 56'h0102030405AA28; ow_rom[63:56] = crc8(56'h0102030405AA28);
+        ow_sel = 1; ow_resets = 0;
+        wr(7'h08, 8'hFF); wr(7'h06, 8'h20); wr(7'h07, 8'h20); #500;
+        esetup(0, 16'd150, 8'd0, 8'h2D, 8'h05, 8'h08, 6'd10, 6'd19, 8'h0F, 6'd0);
+        wr(7'h00, 8'h01);
+        #1200000; erd(0, 4'hD, q);
+        check(ow_resets == 1 && q[7] === 1'b0, "1-Wire: reset pulse, presence detected");
+        ecfg(0, 4'hD, 8'h33); #700000; erd(0, 4'hD, q);
+        bad = (q !== 8'h33);
+        for (ne = 0; ne < 8; ne = ne + 1) begin
+            ecfg(0, 4'hD, 8'hFF); #700000; erd(0, 4'hD, q);
+            if (q !== ow_rom[8 * ne +: 8]) bad = bad + 1;
+            jtdo[8 * ne +: 8] = q;
+        end
+        check(bad == 0, "1-Wire: Read ROM, 8 bytes");
+        check(crc8(jtdo[55:0]) === jtdo[63:56], "1-Wire: ROM CRC-8 checks");
+        wr(7'h00, 8'h00); ow_sel = 0;
+
+        // ===== CAN 2.0A: engine 0, TX pin 0, RX (bus) pin 1, 500 kbit/s, receiver model ACKs
+        pm_clear;
+        // can_tx: 56 words at 0
+        pm[0] = 16'h8140;
+        pm[1] = 16'ha047;
+        pm[2] = 16'h60c8;
+        pm[3] = 16'ha1c3;
+        pm[4] = 16'hc1c6;
+        pm[5] = 16'h01a3;
+        pm[6] = 16'h6601;
+        pm[7] = 16'h0485;
+        pm[8] = 16'h01a6;
+        pm[9] = 16'h6001;
+        pm[10] = 16'hc1c0;
+        pm[11] = 16'ha185;
+        pm[12] = 16'h60c1;
+        pm[13] = 16'hc445;
+        pm[14] = 16'h01a9;
+        pm[15] = 16'h6601;
+        pm[16] = 16'h048e;
+        pm[17] = 16'h01ac;
+        pm[18] = 16'h6001;
+        pm[19] = 16'ha384;
+        pm[20] = 16'hc646;
+        pm[21] = 16'h01af;
+        pm[22] = 16'h6601;
+        pm[23] = 16'h0495;
+        pm[24] = 16'h01b2;
+        pm[25] = 16'h6601;
+        pm[26] = 16'ha543;
+        pm[27] = 16'h01b5;
+        pm[28] = 16'hc601;
+        pm[29] = 16'ha682;
+        pm[30] = 16'ha682;
+        pm[31] = 16'h4001;
+        pm[32] = 16'h8440;
+        pm[33] = 16'hc095;
+        pm[34] = 16'h0722;
+        pm[35] = 16'ha610;
+        pm[36] = 16'h4201;
+        pm[37] = 16'h0005;
+        pm[38] = 16'ha610;
+        pm[39] = 16'h4201;
+        pm[40] = 16'h0008;
+        pm[41] = 16'ha610;
+        pm[42] = 16'h4201;
+        pm[43] = 16'h000e;
+        pm[44] = 16'ha610;
+        pm[45] = 16'h4201;
+        pm[46] = 16'h0011;
+        pm[47] = 16'ha610;
+        pm[48] = 16'h4201;
+        pm[49] = 16'h0015;
+        pm[50] = 16'ha610;
+        pm[51] = 16'h4201;
+        pm[52] = 16'h0018;
+        pm[53] = 16'ha610;
+        pm[54] = 16'h4201;
+        pm[55] = 16'h001b;
+        pm_load;
+        can_sel = 1; c_frames = 0; c_crcok = 0; c_stuffs = 0; c_serr = 0;
+        wr(7'h06, 8'h00); wr(7'h08, 8'hFF); wr(7'h07, 8'h01); #500;
+        esetup(0, 16'd12, 8'd128, 8'h01, 8'h00, 8'h08, 6'd0, 6'd34, 8'h48, 6'd0);
+        ecfg(0, 4'hA, 8'hE5); ecfg(0, 4'hB, 8'h99); ecfg(0, 4'hC, 8'h45);
+        wr(7'h00, 8'h01);
+        can_send(11'h000, 4'd1, 16'h00FF);       // long runs: many stuff bits
+        #150000; erd(0, 4'hD, q);
+        check(c_frames == 1 && c_crcok == 1 && c_id == 11'h000 && c_data[7:0] == 8'hFF,
+              "CAN: frame 1 ID 0x000 data 0xFF, CRC ok");
+        check(q[0] === 1'b0, "CAN: frame 1 ACK seen by the engine");
+        can_send(11'h5A5, 4'd2, 16'h3CC3);
+        #150000; erd(0, 4'hD, q);
+        check(c_frames == 2 && c_crcok == 2 && c_id == 11'h5A5 && c_data == 16'h3CC3 && q[0] === 1'b0,
+              "CAN: frame 2 ID 0x5A5 2 bytes, CRC, ACK");
+        check(c_stuffs >= 4 && c_serr == 0, "CAN: stuff bits inserted, none wrong");
+        wr(7'h00, 8'h00); can_sel = 0;
+        rd(7'h01, q); check(q === 8'h00, "WS2812/1-Wire/CAN: no overruns");
+
         if (fails == 0) $display("ALL TESTS PASSED (%0d checks)", checks);
         else $display("%0d of %0d checks FAILED", fails, checks);
 
         $finish;
     end
-    initial begin #20000000; $display("FAIL timeout"); $finish; end
+    initial begin #100000000; $display("FAIL timeout"); $finish; end
 endmodule

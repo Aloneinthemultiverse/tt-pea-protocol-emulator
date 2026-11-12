@@ -205,3 +205,103 @@ bit:    wait 1 pin 0                ; SCK rises: sample MOSI
         wait 0 pin 0                ; SCK falls: shift out the next MISO bit
         out pins 1
         jmp pin start               ; CSn high: transaction over
+
+.program ws2812
+; WS2812 / NeoPixel LED chain, 800 kHz. Tick = bit/8 (156 ns). Side pin = data line.
+; '0': 2 ticks high, 6 low. '1': 5 high, 3 low. Autopull 8, MSB first (G, R, B per LED).
+; With no data the line stays low, which latches the LEDs.
+bit:    out x 1         side 0 [2]
+        jmp !x zero     side 1 [1]
+        jmp bit         side 1 [2]
+zero:   nop             side 0 [2]
+
+.program onewire
+; 1-Wire controller. Tick = 3 us. One open-drain pin (set base = in base).
+; Entry: reset pulse + presence detect, then byte "touch" slots on every TX byte: each bit is
+; written LSB first and the bus is sampled in the same slot, so writing 0xFF reads a byte.
+; RX: presence byte (bit 7 = 0: a device answered), then one byte per TX byte.
+; Wrap: bit .. end.
+        set pins 0
+        set y 39
+rst:    jmp y-- rst     [3]         ; 480 us reset pulse
+        set pins 1
+        set y 5
+pw:     jmp y-- pw      [3]         ; ~72 us, then sample presence
+        in pins 1
+        push
+        set y 39
+rw:     jmp y-- rw      [3]
+bit:    out x 1                     ; waits here, bus idle, for the next byte
+        set pins 0                  ; slot start
+        jmp !x zero
+        set pins 1                  ; write 1 / read: release after 6 us
+zero:   nop
+        in pins 1                   ; sample at 9-12 us
+        set y 3         [3]
+hold:   jmp y-- hold    [3]
+        set pins 1                  ; end of slot (~72 us low for a 0)
+        nop             [3]         ; recovery
+
+.program can_tx
+; CAN 2.0 transmitter with on-chip bit stuffing and CRC-15. Tick = bit/8. TX = out/set pin,
+; RX (the bus, via the transceiver) = in pin. Stuff mode = equal bits, stuff_n = 5,
+; CRC width 15, polynomial 0x4599, CRC on OUT bits.
+; Host sends n-2 (n = SOF..data bits), then the bits MSB first. The engine stuffs, appends
+; CRC-15 (stuffed), delimiter, samples the ACK slot (RX FIFO bit 0: 0 = acknowledged), then EOF.
+; Every bit, including stuff bits, is exactly 8 ticks. Wrap: start .. eof.
+start:  pull
+        mov x osr
+        out null 8
+        mov crc null
+        set ctl 6                   ; CRC on OUT bits, clear the run counter
+bit:    jmp stuff ins0
+        out pins 1      [3]
+        jmp x-- bit     [2]
+l1:     jmp stuff ins1
+        out pins 1                  ; last data bit
+        set ctl 0
+        mov osr crchi
+        out null 1                  ; CRC-15: drop bit 15
+        set x 5         [2]
+cbit:   jmp stuff insc
+        out pins 1      [3]
+        jmp x-- cbit    [2]
+l2:     jmp stuff ins2
+        out pins 1
+        mov osr crclo   [1]
+        set x 6         [3]
+dbit:   jmp stuff insd
+        out pins 1      [3]
+        jmp x-- dbit    [2]
+l3:     jmp stuff ins3
+        out pins 1      [3]         ; last CRC bit
+        mov isr null    [2]
+l4:     jmp stuff ins4              ; a stuff bit may follow the CRC
+        set pins 1      [3]         ; CRC delimiter
+        nop             [3]
+        nop             [3]         ; ACK slot: stay recessive, sample mid-bit
+        in pins 1
+        push            [2]
+        set y 21
+eof:    jmp y-- eof     [3]         ; ACK delimiter, EOF, intermission
+ins0:   mov pins ~pins  [3]         ; stuff bit = complement of the last bit
+        in pins 1       [1]         ; let the run counter see it
+        jmp bit
+ins1:   mov pins ~pins  [3]
+        in pins 1       [1]
+        jmp l1
+insc:   mov pins ~pins  [3]
+        in pins 1       [1]
+        jmp cbit
+ins2:   mov pins ~pins  [3]
+        in pins 1       [1]
+        jmp l2
+insd:   mov pins ~pins  [3]
+        in pins 1       [1]
+        jmp dbit
+ins3:   mov pins ~pins  [3]
+        in pins 1       [1]
+        jmp l3
+ins4:   mov pins ~pins  [3]
+        in pins 1       [1]
+        jmp l4
