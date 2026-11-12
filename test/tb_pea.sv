@@ -279,6 +279,7 @@ module tb_pea;
                 for (k = 0; k < r_nb * 8; k = k + 1) rb_[k / 8][k % 8] = bits[8 + k];
                 r_res = 16'hFFFF;
                 for (k = 16; k < nbit; k = k + 1) r_res = crc_step(r_res, bits[k]);
+                $write("  host got %0d bits:", nbit); for (k = 0; k < nbit; k = k + 1) $write("%0d", bits[k]); $display("");
                 #(3 * UB);
             end
         end
@@ -1151,7 +1152,7 @@ module tb_pea;
         check(urx[5] === 8'hC3 && urx[6] === 8'h80 && urx[7] === 8'h06 && urx[13] === 8'h00,
               "USB RX: DATA0 setup bytes decoded");
         check({urx[17], urx[16]} === 16'h800D, "USB RX: DATA0 CRC-16 residual 0x800D");
-        $display("  USB RX bytes: %0d", urx_n);
+        $write("  USB RX bytes %0d:", urx_n); for (ne = 0; ne < urx_n; ne = ne + 1) $write(" %h", urx[ne]); $display("");
         rd(7'h01, q); check(q === 8'h00, "USB: no FIFO overruns");
         wr(7'h00, 8'h00); usb_sel = 0;
 
