@@ -47,6 +47,13 @@ module tb_engine_rand;
         for (r = 0; r < runs; r = r + 1) begin
             rst_n = 0;
             for (i = 0; i < 64; i = i + 1) prog[i] = $urandom;
+            // every 4th program is a tight bit-shifting loop (long runs of equal bits: stuffing counter)
+            if (r % 4 == 3) begin
+                prog[0] = 16'h6000 | ($urandom & 16'h01C7);                  // out/in 1 bit to a random dest
+                prog[0][15:13] = ($urandom & 1) ? 3'd3 : 3'd2; prog[0][3:0] = 4'd1; prog[0][5] = 1'b0;
+                prog[1] = 16'h0000;                                            // jmp 0
+                if ($urandom & 1) prog[1] = 16'h0180 | 16'd0;                  // jmp stuff 0 (6 << 6)
+            end
             rnd = $urandom; div_int = rnd[2:0]; div_frac = (rnd[3]) ? rnd[15:8] : 8'd0;
             rnd = $urandom;
             {in_base, out_base, set_base, set_cnt, side_pin, jmp_pin, stuff_n} = rnd[20:0];

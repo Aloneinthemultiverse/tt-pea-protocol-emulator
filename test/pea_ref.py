@@ -229,6 +229,7 @@ class Engine:
             else:
                 n_['run'] = min(s['run'] + 1, 7) if bitv == s['last_b'] else 1
                 n_['last_b'] = bitv
+            if n_['run'] == 7 and s['run'] == 7: cov['run saturated'] += 1
         if crc_upd:
             fb = bit(s['crc'], c['crc_w']) ^ bitv
             n_['crc'] = ((s['crc'] << 1) & M16) ^ (c['crc_poly'] if fb else 0)
@@ -305,7 +306,7 @@ def main():
     need += [f'wait{w} done {h}' for w in range(4) for h in ('at once', 'after waiting')]
     need += ['push', 'push overrun', 'push stall', 'pull', 'pull stall', 'pull empty -> x', 'autopush',
              'autopush overrun', 'out autopull', 'out autopull stall', 'in discard', 'crc step', 'side-set 1',
-             'side-set 2', 'side-set 3', 'delay', 'wrap', 'computed jump', 'resync']
+             'side-set 2', 'side-set 3', 'delay', 'wrap', 'computed jump', 'resync', 'run saturated']
     holes = [b for b in need if cov[b] == 0]
     print(f'engine vs ISA model: {runs} random programs, {clocks} clocks compared, {fails} mismatching runs')
     print(f'coverage: {len(need) - len(holes)}/{len(need)} bins hit; least-hit bins:',

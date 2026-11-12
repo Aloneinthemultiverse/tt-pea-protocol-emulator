@@ -6,7 +6,7 @@ while IFS='|' read -r name from to; do
   total=$((total+1))
   sed "s/$from/$to/" src/pea_engine.v > /tmp/mut.v
   cmp -s src/pea_engine.v /tmp/mut.v && { echo "MUTANT $name: pattern not found"; exit 1; }
-  iverilog -g2012 -o /tmp/msim test/tb_engine_rand.sv /tmp/mut.v && (cd /tmp && vvp -n msim +runs=60 >/dev/null)
+  iverilog -g2012 -o /tmp/msim test/tb_engine_rand.sv /tmp/mut.v && (cd /tmp && vvp -n msim +runs=120 >/dev/null)
   if python3 test/pea_ref.py /tmp/engine_trace.txt >/tmp/mut.log; then echo "MUTANT $name: NOT caught"; else caught=$((caught+1)); echo "MUTANT $name: caught"; fi
 done <<'LIST'
 alu xor->or|x_n = x ^ y|x_n = x \| y
