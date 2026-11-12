@@ -11,16 +11,16 @@ How it was made: designed with the Auralis workflow. RTL was linted (Verilator `
 - [Host setup](docs/HOST.md)
 - Assembler `fw/pea_asm.py`, example programs `fw/programs.pea`
 
-**Protocols verified:** UART (any baud, ±3 %), SPI controller modes 0–3, SPI target, I2C write and read at 100/400 kHz with clock stretching, JTAG (full TAP), SWD read, USB-style NRZI + bit stuffing + CRC-16, and four protocols running concurrently. Added after the hardware was frozen, as firmware only: **WS2812 LEDs, 1-Wire, CAN 2.0A** (stuffing, CRC-15, ACK). 56/56 simulation checks, formal proofs of FIFO and fetch-arbiter correctness, gate-level test and precheck pass.
+**Protocols verified:** UART (any baud, ±3 %), SPI controller modes 0–3, SPI target, I2C write and read at 100/400 kHz with clock stretching, JTAG (full TAP), SWD read, USB-style NRZI + bit stuffing + CRC-16, and four protocols running concurrently. Added after the hardware was frozen, as firmware only: **WS2812 LEDs, 1-Wire, CAN 2.0A** (stuffing, CRC-15, ACK). **Low-speed USB device**: answers a host's GET_DESCRIPTOR (SETUP + IN stages) with on-chip NRZI, stuffing, SE0 and CRC-16, within USB turnaround time. 65/65 simulation checks, formal proofs of FIFO and fetch-arbiter correctness, gate-level test and precheck pass.
 
 ## Architecture
 
 ```
- host SPI (ui_in) ──► registers ──► 64 x 16-bit program store (shared)
+ host SPI (ui_in) ──► registers ──► 128 x 16-bit program store (2 banks, shared)
                          │                 │
                          ▼                 ▼
       4 x engine: PC, X, Y, ISR, OSR, 16.8 fractional tick divider, CRC/LFSR,
-                  run-length counter, 4-deep TX and RX FIFOs
+                  run-length counter, 8-deep TX and RX FIFOs
                          │
                          ▼
       8 protocol pins (uio, push-pull or open-drain) · 8 shared flags (6 on uo_out)
@@ -78,8 +78,8 @@ How it got there: the first routable version used one 64:1 program-store read mu
 ## Limits (stated plainly)
 
 - Clock target 25 MHz. Shared instruction fetch keeps timing exact for tick periods of about 5 clocks or more.
-- Low-speed USB and CAN: line-level primitives (NRZI, stuffing, CRC, resync) are verified; no complete stack yet.
-- 10 Mbit Ethernet is out of reach at 25 MHz with 4-byte FIFOs.
+- USB: SETUP and IN stages of a control transfer at packet level; the rest of enumeration is not written. CAN: transmit only.
+- 10 Mbit Ethernet is out of reach at 25 MHz.
 - The engine is verified by simulation; formal proofs cover the FIFOs and the fetch arbiter.
 - Silicon has not been measured; all results are from simulation and the Tiny Tapeout flow.
 

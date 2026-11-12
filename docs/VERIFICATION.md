@@ -6,7 +6,7 @@
 |---|---|---|---|
 | Lint | Verilator `-Wall`, Yosys `check -assert` | no multiple drivers, latches, width bugs | clean |
 | Formal | SymbiYosys (Yosys + yices), k-induction | FIFO safety and data integrity; fetch arbiter fairness | **all proven** (unbounded) |
-| Protocol simulation | Icarus Verilog, `test/tb_pea.sv` | every shipped program against an independent model of the other side | **56/56 checks** |
+| Protocol simulation | Icarus Verilog, `test/tb_pea.sv` | every shipped program against an independent model of the other side | **65/65 checks** |
 | Constrained random | same bench, fixed seed `0x5EA02027` | UART RX random bytes at random baud error; SPI random full-duplex bursts in all 4 modes; SPI target random bytes | included in the 46 |
 | RTL + gate level | cocotb (`test/test.py`), Tiny Tapeout flow | host port, UART TX, UART RX on the RTL **and on the routed netlist** | pass |
 | Physical | LibreLane, Tiny Tapeout precheck | GDS, DRC/LVS, 0 routing violations, 25 MHz timing in all corners | pass |
@@ -57,6 +57,7 @@ Together these show that, for any program mix, no engine is starved of instructi
 | WS2812 | 2 LEDs (48 bits) decoded from pulse widths; every high time inside the datasheet window (T0H 250–550 ns, T1H 650–950 ns); line held low to latch |
 | 1-Wire | 480 µs reset, presence detected; Read ROM (0x33) returns the 8-byte ROM of a device model; ROM CRC-8 verified |
 | CAN 2.0A | two frames at 500 kbit/s to a receiver model that hard-syncs on SOF, destuffs, checks CRC-15 and drives ACK; engine sees the ACK; stuff bits present and all correct |
+| Low-speed USB device | A USB host model runs a GET_DESCRIPTOR control transfer: SETUP + DATA0 → device ACK; IN → device DATA1 with 8 descriptor bytes. Checked: ACK and DATA1 received by the host, both within 7.5 bit times, the CRC-16 generated on chip is valid at the host (residual 0x800D), the device's receiver decoded the SETUP token and the setup bytes with residual 0x800D, no overruns. Three engines cooperate (receiver, handshake, data transmitter in program bank 1) through shared flags |
 | Concurrency | UART TX → UART RX loopback, SPI and I2C running on **all four engines at once**, all correct, no overruns |
 | Global | no FIFO overruns or IRQs where none are expected |
 
@@ -94,13 +95,20 @@ hardening run reports 24.4 % utilization, 0 detailed-routing violations, and tim
 | Detailed routing did not finish in 6 h (4 private 64:1 program muxes) | routing logs | shared round-robin fetch port: core 12.6k → 6.2k cells |
 | Stale arbiter pointer assignment after refactor | protocol sim build | removed |
 | Formal harness used hierarchical references unsupported by the flow | SymbiYosys | properties moved inside the modules under `ifdef FORMAL` |
+| Assembler placed bank-1 code at base 64: label bit 6 spilled into the jump-condition field (`jmp y--` became `jmp pin`) | USB simulation, program-counter trace | bases are bank-relative; the assembler rejects bases outside 0–63 |
+| USB data packet (PID + 8 bytes) one byte larger than the TX FIFO | USB simulation (transmitter stalled) | SYNC generated in code, PID held in the shift register |
+| USB device answered so fast (~3 bit times) that its own receiver had not re-armed and mis-decoded the echo | USB simulation, flag trace | ~1.5 bit times of delay in spare delay slots (still inside the 7.5 bit-time limit) |
 
 ## 6. Limits
 
 - The engine itself is verified by simulation, not formally (its state space is too large for a full proof here).
 - Firmware is checked against behavioural models, not real devices; silicon has not been measured.
 - Tick periods below ~5 clocks can see 1 clock of jitter when all four engines miss the instruction cache at once.
-- No full USB stack yet; only its line-level primitives are verified. 10 Mbit Ethernet is out of reach at 25 MHz.
+- USB: a control transfer's SETUP and IN data stages are shown at packet level against a host model; enumeration
+  beyond that (status stage, SET_ADDRESS, NAK/STALL handling, data-toggle tracking, CRC5 checking of tokens) is
+  left to the host MCU or not written. At 25 MHz the USB transmit tick is ~4 clocks, below the ~5-clock figure
+  for fully jitter-free shared fetch (only 3 engines are active, so collisions are rare). 10 Mbit Ethernet is out
+  of reach at 25 MHz.
 
 ## 7. AI use
 
@@ -114,7 +122,7 @@ independent models, gate-level simulation, precheck). Several AI mistakes listed
 
 ```
 python test/gen_tb.py
-iverilog -g2012 -o sim test/tb_pea.sv src/*.v && vvp sim      # 56 protocol checks
+iverilog -g2012 -o sim test/tb_pea.sv src/*.v && vvp sim      # 65 protocol checks
 cd formal && sby -f fifo.sby && sby -f arb.sby                # formal proofs
 cd test && make                                               # cocotb (RTL); GATES=yes for gate level
 ```

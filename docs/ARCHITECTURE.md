@@ -7,7 +7,7 @@ serial protocols cheap: divider resync (clock recovery), NRZI, a run-length coun
 ## 1. Block diagram
 
 ```
- ui_in[0..2] host SPI ──► host port ──► register file ──► 64 x 16-bit program store
+ ui_in[0..2] host SPI ──► host port ──► register file ──► 128 x 16-bit program store (2 banks)
  uo_out[0]   MISO  ◄──┘                     │                   │ one read port
  uo_out[1]   IRQ                            │            round-robin fetch arbiter
                                             ▼                   ▼
@@ -15,7 +15,7 @@ serial protocols cheap: divider resync (clock recovery), NRZI, a run-length coun
         │ PC, X, Y (8 bit), ISR, OSR, cached instruction                 │
         │ 16.8 fractional tick divider, resync on edges                  │
         │ CRC/LFSR (width 1..16, any polynomial), run-length counter     │
-        │ NRZI coder, 4-deep TX FIFO, 4-deep RX FIFO                     │
+        │ NRZI coder, 8-deep TX FIFO, 8-deep RX FIFO                     │
         └────────────────────────────────────────────────────────────────┘
                      │ pin out/dir requests (merged)        │ flags
                      ▼                                       ▼
@@ -29,7 +29,9 @@ An instruction can add 0–3 delay ticks and drive one side-set pin in the same 
 are 2 instructions per bit.
 
 ### Shared program store and fetch
-The four engines share one 64x16 program store with a single read port. Each engine caches the instruction
+The four engines share one 128x16 program store with a single read port. It is split into two 64-word
+banks; each engine selects its bank with config bit `+5[6]`, so programs keep 6-bit jump targets and two
+large programs (e.g. a USB receiver and a USB transmitter) can be resident at once. Each engine caches the instruction
 at its current PC; when the PC changes, the engine raises `need` and the round-robin arbiter (`pea_fetch_arb`)
 grants one engine per clock. A tick waits until its instruction is cached, so timing is exact whenever the tick
 period is ≥ ~5 clocks (worst case: all four engines miss at once). The arbiter is formally proven to be
@@ -46,7 +48,8 @@ every cache. This sharing halved the core area and made the 8x4 layout route (4 
   writes them; flags 0–5 are on `uo_out[7:2]` as trigger outputs for a scope or another chip.
 
 ### FIFOs
-Each engine has a 4-byte TX FIFO (host → engine) and a 4-byte RX FIFO (engine → host). Autopull/autopush move
+Each engine has an 8-byte TX FIFO (host → engine) and an 8-byte RX FIFO (engine → host), enough for a whole
+low-speed USB data packet. Autopull/autopush move
 whole bytes at programmable thresholds (1–8 bits). Overruns are latched in register `0x01[7:4]`.
 Proven formally: no overflow/underflow, flags always agree with occupancy, data leaves unchanged and in order.
 
@@ -60,7 +63,7 @@ Format: `[15:13] opcode | [12:11] side-set | [10:9] delay | [8:0] operand`
 
 | Op | Mnemonic | Operand | Meaning |
 |---|---|---|---|
-| 0 | `jmp [cond] label` | `[8:6]` cond, `[5:0]` target | cond: always, `!x`, `x--`, `!y`, `y--`, `pin` (jmp_pin high), `stuff` (run length ≥ stuff_n, then clears it), `x!=y`. `x--`/`y--` jump if non-zero, then decrement. |
+| 0 | `jmp [cond] label` | `[8:6]` cond, `[5:0]` target (bank-relative) | cond: always, `!x`, `x--`, `!y`, `y--`, `pin` (jmp_pin high; in `diff` mode: SE0, i.e. jmp_pin and jmp_pin+1 both low), `stuff` (run length ≥ stuff_n, then clears it), `x!=y`. `x--`/`y--` jump if non-zero, then decrement. |
 | 1 | `wait pol src idx [resync]` | `[8]` polarity, `[7:6]` src, `[5:3]` index, `[2]` resync | src: `pin` (level), `edge` (transition to pol), `flag`, `anyedge`. `resync` restarts the tick divider on the event (clock recovery). |
 | 2 | `in src n [discard]` | `[8:6]` src, `[5]` discard, `[3:0]` bits | src: pins, x, y, null, osr, nrzi (decoded line bit), crclo, crchi. n = 0 or ≥8 means 8. `discard` updates CRC/run counter without shifting into ISR. |
 | 3 | `out dst n` | `[8:6]` dst, `[3:0]` bits | dst: pins, x, y, null, pindirs, nrzi (encoded on the line), pc. |
@@ -78,7 +81,7 @@ Wrap: after the instruction at `wrap_top` the PC continues at `wrap_bot`, at no 
 | 0, 1, 2 | divider fraction, integer low, integer high |
 | 3 | `[2:0]` in_base, `[5:3]` out_base |
 | 4 | `[2:0]` set_base, `[5:3]` side_pin |
-| 5 | `[2:0]` jmp_pin, `[5:3]` set_count |
+| 5 | `[2:0]` jmp_pin, `[5:3]` set_count, `[6]` program bank |
 | 6, 7 | wrap bottom, wrap top |
 | 8 | in threshold, out threshold |
 | 9 | bit0 in_right, 1 out_right, 2 autopush, 3 autopull, 4 auto_resync, 5 resync_half, 6 stuff_mode, 7 diff (differential NRZI pair) |
@@ -93,7 +96,7 @@ Global registers: see the README register map.
 ## 4. Toolchain
 
 `fw/pea_asm.py` assembles `.program` sections from `fw/programs.pea` (labels, `side 0|1|t`, `[delay]`, `;` comments)
-into 16-bit words placed at any base address (`assemble(text, base)`). `test/gen_tb.py` embeds assembled programs
+into 16-bit words; `assemble(text, base)` takes a bank-relative base (0–63). `test/gen_tb.py` embeds assembled programs
 into the Verilog testbench; `test/test.py` (cocotb) assembles at run time. Shipped programs:
 
 | Program | Words | Protocol |
@@ -108,5 +111,8 @@ into the Verilog testbench; `test/test.py` (cocotb) assembles at run time. Shipp
 | `ws2812` | 4 | WS2812 / NeoPixel LEDs, 800 kHz pulse-width coding |
 | `onewire` | 20 | 1-Wire: reset/presence, read/write slots, Read ROM |
 | `can_tx` | 56 | CAN 2.0A transmitter: bit stuffing, CRC-15, ACK slot, EOF, 500 kbit/s |
+| `usb_rx` | 26 | Low-speed USB receiver: SYNC, NRZI, destuffing, SE0 end-of-packet, CRC-16 residual, any length |
+| `usb_ack` | 15 | USB handshake engine: ACKs the SETUP stage within the turnaround time |
+| `usb_tx` | 64 | USB data engine (bank 1): DATA1 + payload + on-chip CRC-16, stuffing, EOP |
 
 Adding a protocol = writing a `.program` section; no hardware change.

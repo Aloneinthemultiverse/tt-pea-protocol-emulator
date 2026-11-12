@@ -1,4 +1,4 @@
-// PEA core: 4 engines sharing a 64-word program store, 8 protocol pins, 8 flags,
+// PEA core: 4 engines sharing a 128-word program store (2 banks), 8 protocol pins, 8 flags,
 // per-engine TX/RX FIFOs and an SPI-slave host port (mode 0, oversampled by clk).
 // Host frame: byte0 = {write, addr[6:0]}, then data bytes to/from that same register.
 `default_nettype none
