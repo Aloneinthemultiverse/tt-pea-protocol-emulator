@@ -63,6 +63,24 @@ Together these show that, for any program mix, no engine is starved of instructi
 
 Random tests use a fixed seed, so every run is identical and failures can be replayed.
 
+## 3b. Engine against an independent ISA model (random instructions)
+
+`test/tb_engine_rand.sv` drives one engine with random configurations, random 64-word programs and random
+pins, flags and FIFO status. `test/pea_ref.py` is a second implementation of the ISA in Python, written from
+the architecture document. It replays the logged inputs and must reproduce **every output and every state
+register on every clock**.
+
+- 400 random programs, 1,200,000 clocks compared, 0 mismatches.
+- Functional coverage: 91/91 bins hit. The bins cover every opcode and sub-op, both outcomes of every branch,
+  all four WAIT kinds (immediate and after waiting), push/pull with stall and overrun, autopush and autopull,
+  all side-set kinds, delays, wrap, computed jumps, divider resync and stuffing-counter saturation.
+- Mutation check (`test/mutants.sh`): 10 bugs are planted one at a time in a copy of the engine (ALU, branch
+  condition, shifter, autopush threshold, stuffing counter, CRC tap, side-set, wrap, pull, fractional
+  divider). All 10 are caught. The first version missed the stuffing-counter bug, which exposed a coverage
+  hole; it was fixed by adding a coverage bin and biased bit-shifting programs.
+- Limit: the model and the RTL come from the same author, so a misreading of the specification shared by both
+  would not show up. The protocol tests against independent device models (section 3) cover that risk.
+
 ## 3a. Flexibility test: protocols the hardware was not designed for
 
 The judging criterion is whether the chip can be reprogrammed for protocols it was not designed for. After the
