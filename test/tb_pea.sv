@@ -284,11 +284,11 @@ module tb_pea;
         end
     endtask
     // host MCU: drains the receive engine's FIFO while the bus runs
-    reg [7:0] urx [0:63]; integer urx_n = 0; reg urx_on = 0;
+    reg [7:0] urx [0:63], ur_q; integer urx_n = 0; reg urx_on = 0;
     always begin
         wait (urx_on);
-        erd(1, 4'hE, q2);
-        if (!q2[3]) begin erd(1, 4'hD, q2); urx[urx_n] = q2; urx_n = urx_n + 1; end
+        erd(1, 4'hE, ur_q);
+        if (!ur_q[3]) begin erd(1, 4'hD, ur_q); urx[urx_n] = ur_q; urx_n = urx_n + 1; end
     end
 
     // JTAG host-side cycle list
