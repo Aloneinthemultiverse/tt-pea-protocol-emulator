@@ -1,0 +1,97 @@
+#!/usr/bin/env python3
+"""Draw one waveform PNG per protocol from waves.txt (written by tb_pea.sv) into docs/waveforms/.
+Each picture starts at the first edge of the section's clock/data pin and spans its first N edges."""
+import os
+import sys
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+
+# section marker -> (title, [(pin, label)], pin whose edges set the window, number of edges, file)
+VIEWS = {
+    'UART': ('UART 115200 baud: engine 0 TX looped into engine 1 RX', [(0, 'TX'), (1, 'RX')], 0, 24, 'uart'),
+    'SPI master': ('SPI controller, mode 0', [(2, 'SCK'), (3, 'MOSI'), (4, 'MISO')], 2, 34, 'spi'),
+    'I2C master': ('I2C controller 400 kHz: START, address, ACK', [(6, 'SCL'), (5, 'SDA')], 6, 44, 'i2c'),
+    'NRZI + bit stuffing + CR': ('NRZI + bit stuffing + CRC-16 frame', [(7, 'LINE')], 7, 60, 'nrzi'),
+    'JTAG': ('JTAG: TAP walk and shift', [(0, 'TCK'), (2, 'TMS'), (1, 'TDI'), (4, 'TDO')], 0, 40, 'jtag'),
+    'SWD read': ('SWD read: request, turnaround, ACK, data', [(0, 'SWCLK'), (1, 'SWDIO')], 0, 60, 'swd'),
+    'concurrency': ('Four engines at once: UART, SPI, I2C', [(0, 'UART TX'), (1, 'UART RX'), (2, 'SCK'),
+                    (3, 'MOSI'), (6, 'SCL'), (5, 'SDA')], 2, 60, 'concurrency'),
+    'SPI target': ('SPI target: external controller drives SCK, CSn, MOSI', [(1, 'CSn'), (0, 'SCK'), (2, 'MOSI'),
+                   (3, 'MISO')], 0, 34, 'spi_target'),
+    'WS2812': ('WS2812 LEDs: 800 kHz pulse-width code', [(0, 'DIN')], 0, 40, 'ws2812'),
+    '1-Wire': ('1-Wire: reset, presence, Read ROM', [(5, 'DQ')], 5, 24, 'onewire'),
+    'CAN 2.0A': ('CAN 2.0A 500 kbit/s frame (bus = TX wired-AND receiver ACK)', [(0, 'TX'), (1, 'BUS')], 0, 70, 'can'),
+    'Low-speed USB device': ('Low-speed USB: host SETUP + DATA0, device ACK, host IN, device DATA1',
+                             [(6, 'D-'), (7, 'D+')], 6, 400, 'usb'),
+}
+
+
+def main():
+    src = sys.argv[1] if len(sys.argv) > 1 else 'waves.txt'
+    out = sys.argv[2] if len(sys.argv) > 2 else 'docs/waveforms'
+    os.makedirs(out, exist_ok=True)
+    marks, ev = [], []
+    for ln in open(src):
+        t = ln.split()
+        if not t:
+            continue
+        if t[0] == 'M':
+            marks.append((int(t[1]), ' '.join(t[2:])))
+        else:
+            ev.append((int(t[0]), int(t[1], 16)))
+    made = 0
+    for i, (t0, name) in enumerate(marks):
+        if name not in VIEWS:
+            continue
+        title, pins, cpin, nedge, fname = VIEWS[name]
+        t_end = marks[i + 1][0] if i + 1 < len(marks) else ev[-1][0]
+        sec = [e for e in ev if t0 <= e[0] < t_end]
+        prev = [v for (tt, v) in ev if tt < t0]
+        v0 = prev[-1] if prev else 0
+        edges, last = [], (v0 >> cpin) & 1
+        for tt, v in sec:
+            b = (v >> cpin) & 1
+            if b != last:
+                edges.append(tt)
+                last = b
+        if len(edges) < 2:
+            print(f'{name}: no activity on pin {cpin}')
+            continue
+        span = edges[min(nedge, len(edges) - 1)] - edges[0]
+        a, b = edges[0] - span * 0.05, edges[min(nedge, len(edges) - 1)] + span * 0.05
+        us = (b - a) >= 20000
+        sc, unit = (1e-3, 'µs') if us else (1.0, 'ns')
+        fig, ax = plt.subplots(figsize=(12, 0.75 * len(pins) + 1.2))
+        for row, (pin, label) in enumerate(pins):
+            y0 = (len(pins) - 1 - row) * 1.5
+            xs, ys, cur = [a], [], v0
+            for tt, v in ev:
+                if tt <= a:
+                    cur = v
+            ys.append((cur >> pin) & 1)
+            for tt, v in sec:
+                if a < tt < b:
+                    xs += [tt, tt]
+                    ys += [ys[-1], (v >> pin) & 1]
+            xs.append(b)
+            ys.append(ys[-1])
+            ax.plot([x * sc for x in xs], [y0 + y for y in ys], lw=1.4, color='#1f5fa8')
+            ax.text(a * sc, y0 + 0.5, label + '  ', ha='right', va='center', fontsize=10)
+        ax.set_yticks([])
+        ax.set_xlim(a * sc, b * sc)
+        ax.set_xlabel(f'simulation time ({unit}), RTL simulation, Icarus Verilog')
+        ax.set_title(title, fontsize=11, loc='left')
+        for s in ('top', 'right', 'left'):
+            ax.spines[s].set_visible(False)
+        fig.tight_layout()
+        fig.savefig(os.path.join(out, fname + '.png'), dpi=110)
+        plt.close(fig)
+        made += 1
+        print(f'{name}: {fname}.png ({len(edges)} edges in section)')
+    print(f'{made} waveform pictures')
+    sys.exit(0 if made == len(VIEWS) else 1)
+
+
+if __name__ == '__main__':
+    main()

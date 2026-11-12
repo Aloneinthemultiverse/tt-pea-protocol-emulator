@@ -32,6 +32,16 @@ module tb_pea;
     tt_um_auralis_pea dut (.ui_in({5'd0, mosi, csn, sclk}), .uo_out(uo_out), .uio_in(uio_in),
                            .uio_out(uio_out), .uio_oe(uio_oe), .ena(1'b1), .clk(clk), .rst_n(rst_n));
 
+    // waveform log for docs/waveforms (test/plot_waves.py): every change of the 8 bidirectional pins
+    // as seen on the wire (driven by the chip, else by the external model), plus section markers
+    wire [7:0] wf_bus = (uio_oe & uio_out) | (~uio_oe & uio_in);
+    integer wf;
+    initial wf = $fopen("waves.txt", "w");
+    always @(wf_bus) $fdisplay(wf, "%0d %h", $time, wf_bus);
+    task wmark(input [8*24-1:0] name);
+        $fdisplay(wf, "M %0d %0s", $time, name);
+    endtask
+
     integer fails = 0, checks = 0;
     task check(input cond, input [8*40-1:0] name);
         begin
@@ -418,11 +428,13 @@ module tb_pea;
         #100 rst_n = 1; #200;
 
         // ===== host port
+        wmark("host port");
         wr(7'h02, 8'hA5); rd(7'h02, q);
         check(q === 8'hA5, "host register write/read");
         check(uo_out[7:2] === 6'b100101, "flags visible on uo_out");
 
         // ===== UART: engine 0 transmits on pin 0, engine 1 receives on pin 1
+        wmark("UART");
         pm_clear;
         // uart_tx: 5 words at 0
         pm[0] = 16'h9940;
@@ -467,6 +479,7 @@ module tb_pea;
         check(bad == 0, "UART RX 40 random bytes, random baud");
 
         // ===== SPI master: engine 2, SCK pin 2, MOSI pin 3, MISO pin 4
+        wmark("SPI master");
         pm_clear;
         // spi_master: 2 words at 0
         pm[0] = 16'h7001;
@@ -537,6 +550,7 @@ module tb_pea;
         wr(7'h00, 8'h00); s_mode = 0;
 
         // ===== I2C master: engine 3, open-drain SDA pin 5, SCL pin 6
+        wmark("I2C master");
         pm_clear;
         // i2c_master: 18 words at 0
         pm[0] = 16'h8140;
@@ -619,6 +633,7 @@ module tb_pea;
         check(i_stop === 1'b1 && sda === 1'b1 && scl === 1'b1, "I2C read: STOP, bus released");
 
         // ===== NRZI + bit stuffing + CRC-16: engine 0 transmits, engine 1 receives, pin 7
+        wmark("NRZI + bit stuffing + CR");
         pm_clear;
         // nrzi_tx: 22 words at 0
         pm[0] = 16'h8140;
@@ -700,6 +715,7 @@ module tb_pea;
         rd(7'h01, q); check(q === 8'h00, "no FIFO overruns, no IRQs");
 
         // ===== JTAG: engine 0, TCK pin 0, TDI pin 1, TMS pin 2, TDO pin 4
+        wmark("JTAG");
         wr(7'h00, 8'h00);
         pm_clear;
         // jtag: 5 words at 0
@@ -759,6 +775,7 @@ module tb_pea;
         wr(7'h00, 8'h00); jtag_sel = 0;
 
         // ===== SWD read: engine 1, SWCLK pin 0, SWDIO pin 1
+        wmark("SWD read");
         swd_sel = 1; wr(7'h08, 8'h02); wr(7'h07, 8'h03); #200; sw_r = 0;
         esetup(1, 16'd5, 8'd0, 8'h09, 8'h01, 8'h08, 6'd8, 6'd28, 8'h03, 6'd8);
         wr(7'h00, 8'h02);
@@ -774,6 +791,7 @@ module tb_pea;
         wr(7'h00, 8'h00); swd_sel = 0;
         rd(7'h01, q); check(q === 8'h00, "JTAG/SWD: no FIFO overruns");
         // ===== concurrency: all four engines at once (UART TX -> UART RX loopback, SPI, I2C)
+        wmark("concurrency");
         wr(7'h00, 8'h00);
         pm_clear;
         // uart_tx: 5 words at 0
@@ -833,6 +851,7 @@ module tb_pea;
         wr(7'h00, 8'h00);
 
         // ===== SPI target: engine 0 is the slave; the testbench drives SCK pin 0, CSn pin 1,
+        wmark("SPI target");
         // MOSI pin 2 and reads MISO on pin 3
         pm_clear;
         // spi_target: 7 words at 0
@@ -864,6 +883,7 @@ module tb_pea;
         rd(7'h01, q); check(q === 8'h00, "SPI target: no overruns");
 
         // ===== WS2812: engine 0, data on pin 0, two LEDs (48 bits)
+        wmark("WS2812");
         wr(7'h00, 8'h00); pm_clear;
         // ws2812: 4 words at 0
         pm[0] = 16'h7441;
@@ -883,6 +903,7 @@ module tb_pea;
         wr(7'h00, 8'h00); ws_sel = 0;
 
         // ===== 1-Wire: engine 0, open-drain pin 5, device model answers Read ROM
+        wmark("1-Wire");
         pm_clear;
         // onewire: 20 words at 0
         pm[0] = 16'hc000;
@@ -925,6 +946,7 @@ module tb_pea;
         wr(7'h00, 8'h00); ow_sel = 0;
 
         // ===== CAN 2.0A: engine 0, TX pin 0, RX (bus) pin 1, 500 kbit/s, receiver model ACKs
+        wmark("CAN 2.0A");
         pm_clear;
         // can_tx: 56 words at 0
         pm[0] = 16'h8140;
@@ -1003,6 +1025,7 @@ module tb_pea;
         rd(7'h01, q); check(q === 8'h00, "WS2812/1-Wire/CAN: no overruns");
 
         // ===== Low-speed USB device: control transfer GET_DESCRIPTOR (SETUP stage + IN data stage)
+        wmark("Low-speed USB device");
         // engine 1 = receiver (bank 0 @0), engine 2 = handshake (bank 0 @32), engine 3 = data TX (bank 1)
         wr(7'h00, 8'h00); pm_clear;
         // usb_rx: 26 words at 0

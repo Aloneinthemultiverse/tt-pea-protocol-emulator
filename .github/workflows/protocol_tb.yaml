@@ -13,6 +13,11 @@ jobs:
       - run: python3 test/gen_tb.py
       - run: iverilog -g2012 -o sim test/tb_pea.sv src/*.v && vvp -n sim | tee sim.log
       - run: "! grep -q FAIL sim.log"
+      - run: /usr/bin/python3 -m pip install --break-system-packages -q matplotlib && /usr/bin/python3 test/plot_waves.py waves.txt docs/waveforms
+      - uses: actions/upload-artifact@v4
+        with:
+          name: waveforms
+          path: docs/waveforms
       - run: iverilog -g2012 -o esim test/tb_engine_rand.sv src/pea_engine.v && vvp -n esim
       - run: python3 test/pea_ref.py engine_trace.txt
       - run: bash test/mutants.sh
