@@ -12,46 +12,46 @@ module pea_fifo (
     output wire       full,
     output wire       empty
 );
-    reg [7:0] mem [0:3];
-    reg [2:0] wp, rp;
+    reg [7:0] mem [0:7];                           // 8 deep: a whole low-speed USB data packet
+    reg [3:0] wp, rp;
     assign empty = (wp == rp);
-    assign full  = (wp[1:0] == rp[1:0]) && (wp[2] != rp[2]);
-    assign dout  = empty ? 8'h00 : mem[rp[1:0]];   // never present unwritten storage
+    assign full  = (wp[2:0] == rp[2:0]) && (wp[3] != rp[3]);
+    assign dout  = empty ? 8'h00 : mem[rp[2:0]];   // never present unwritten storage
     always @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin wp <= 3'd0; rp <= 3'd0; end
+        if (!rst_n) begin wp <= 4'd0; rp <= 4'd0; end
         else begin
-            if (push && !full) begin mem[wp[1:0]] <= din; wp <= wp + 3'd1; end
-            if (pop && !empty) rp <= rp + 3'd1;
+            if (push && !full) begin mem[wp[2:0]] <= din; wp <= wp + 4'd1; end
+            if (pop && !empty) rp <= rp + 4'd1;
         end
     end
 `ifdef FORMAL
-    // safety: occupancy stays 0..4 and the flags agree with it
-    wire [2:0] f_count = wp - rp;
+    // safety: occupancy stays 0..8 and the flags agree with it
+    wire [3:0] f_count = wp - rp;
     reg f_ok = 0;
     always @(posedge clk) f_ok <= rst_n;
     always @* if (f_ok && rst_n) begin
-        assert (f_count <= 3'd4);
-        assert (full  == (f_count == 3'd4));
-        assert (empty == (f_count == 3'd0));
+        assert (f_count <= 4'd8);
+        assert (full  == (f_count == 4'd8));
+        assert (empty == (f_count == 4'd0));
         if (empty) assert (dout == 8'h00);
     end
     // integrity: one arbitrary tagged byte leaves unchanged and in order
     (* anyconst *) reg [7:0] f_tag;
     (* anyseq *)   reg       f_pick;
     reg       f_trk = 0, f_seen = 0;
-    reg [2:0] f_ahead = 0;
+    reg [3:0] f_ahead = 0;
     always @(posedge clk) if (f_ok && rst_n) begin
         if (!f_trk && !f_seen && f_pick && push && !full && din == f_tag) begin
-            f_trk <= 1'b1; f_ahead <= f_count - ((pop && !empty) ? 3'd1 : 3'd0);
+            f_trk <= 1'b1; f_ahead <= f_count - ((pop && !empty) ? 4'd1 : 4'd0);
         end else if (f_trk && pop && !empty) begin
-            if (f_ahead == 3'd0) begin f_trk <= 1'b0; f_seen <= 1'b1; end
-            else f_ahead <= f_ahead - 3'd1;
+            if (f_ahead == 4'd0) begin f_trk <= 1'b0; f_seen <= 1'b1; end
+            else f_ahead <= f_ahead - 4'd1;
         end
     end
     always @* if (f_ok && rst_n && f_trk) begin
         assert (f_ahead < f_count);
-        assert (mem[rp[1:0] + f_ahead[1:0]] == f_tag);
-        if (f_ahead == 3'd0) assert (dout == f_tag);
+        assert (mem[rp[2:0] + f_ahead[2:0]] == f_tag);
+        if (f_ahead == 4'd0) assert (dout == f_tag);
     end
     always @* cover (f_seen);
 `endif
@@ -171,10 +171,10 @@ module pea_core (
     wire spi_csn_start = (csn_s[2:1] == 2'b10);
     reg [3:0]  en;
     reg [7:0]  irqs, flags, pin_od, pin_dir, pin_out;
-    reg [5:0]  paddr;
+    reg [6:0]  paddr;
     reg [7:0]  plo;
     reg        phase;
-    reg [15:0] prog [0:63];
+    reg [15:0] prog [0:127];                    // two 64-word banks; each engine picks one
     reg [7:0]  ecfg [0:63];
 
     wire        w_glob = wr_stb && (addr[6:4] == 3'd0);
@@ -208,7 +208,7 @@ module pea_core (
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             en <= 4'd0; irqs <= 8'd0; flags <= 8'd0; pin_od <= 8'd0; pin_dir <= 8'd0; pin_out <= 8'hFF;
-            paddr <= 6'd0; plo <= 8'd0; phase <= 1'b0;
+            paddr <= 7'd0; plo <= 8'd0; phase <= 1'b0;
             for (i = 0; i < 64; i = i + 1) ecfg[i] <= 8'd0;
         end else begin
             pin_out <= po_n; pin_dir <= pd_n; flags <= fl_n;
@@ -217,11 +217,11 @@ module pea_core (
             if (w_glob) begin
                 case (addr[3:0])
                     4'h0: en <= byte_in[3:0];
-                    4'h3: paddr <= byte_in[5:0];
+                    4'h3: paddr <= byte_in[6:0];
                     4'h4: begin
                         phase <= ~phase;
                         if (!phase) plo <= byte_in;
-                        else begin prog[paddr] <= {byte_in, plo}; paddr <= paddr + 6'd1; end
+                        else begin prog[paddr] <= {byte_in, plo}; paddr <= paddr + 7'd1; end
                     end
                     4'h6: pin_od <= byte_in;
                     default: ;
@@ -238,7 +238,7 @@ module pea_core (
                 4'h0: rdata = {4'd0, en};
                 4'h1: rdata = irqs;
                 4'h2: rdata = flags;
-                4'h3: rdata = {2'd0, paddr};
+                4'h3: rdata = {1'b0, paddr};
                 4'h5: rdata = pins;
                 4'h6: rdata = pin_od;
                 4'h7: rdata = pin_dir;
@@ -260,13 +260,15 @@ module pea_core (
     // instruction does not match its PC requests a fetch; a round-robin arbiter grants one per
     // clock. Program writes invalidate every cached instruction.
     reg [15:0] ir_r [0:3];
-    reg [5:0]  ir_pc [0:3];
+    reg [6:0]  ir_pc [0:3];                     // {bank, pc} of the cached instruction
     reg [3:0]  ir_v;
     wire [3:0] need;
+    wire [6:0] e_fa [0:3];
     genvar n;
     generate
         for (n = 0; n < 4; n = n + 1) begin : nd
-            assign need[n] = !(ir_v[n] && ir_pc[n] == e_pc[n]);
+            assign e_fa[n] = {ecfg[16 * n + 5][6], e_pc[n]};   // engine config +5 bit 6: program bank
+            assign need[n] = !(ir_v[n] && ir_pc[n] == e_fa[n]);
         end
     endgenerate
     wire [1:0]  gsel;
@@ -274,12 +276,12 @@ module pea_core (
     integer r;                                     // reset loop
     wire        pwrite = w_glob && addr[3:0] == 4'h4;
     pea_fetch_arb u_arb (.clk(clk), .rst_n(rst_n), .need(need), .hold(pwrite), .gsel(gsel), .gany(gany));
-    wire [5:0]  fpc   = e_pc[gsel];
+    wire [6:0]  fpc   = e_fa[gsel];
     wire [15:0] fdata = prog[fpc];
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             ir_v <= 4'd0;
-            for (r = 0; r < 4; r = r + 1) begin ir_r[r] <= 16'd0; ir_pc[r] <= 6'd0; end
+            for (r = 0; r < 4; r = r + 1) begin ir_r[r] <= 16'd0; ir_pc[r] <= 7'd0; end
         end else if (pwrite) begin
             ir_v <= 4'd0;
         end else if (gany) begin
@@ -302,7 +304,7 @@ module pea_core (
                            .full(rx_full[g]), .empty(rx_empty[g]));
             pea_engine u_e (
                 .clk(clk), .rst_n(rst_n), .en(en[g]),
-                .pc_o(e_pc[g]), .ir(ir_r[g]), .ir_ok(ir_v[g] && (ir_pc[g] == e_pc[g])),
+                .pc_o(e_pc[g]), .ir(ir_r[g]), .ir_ok(ir_v[g] && (ir_pc[g] == e_fa[g])),
                 .force_pc(wr_stb && mine && addr[3:0] == 4'hF), .force_addr(byte_in[5:0]),
                 .div_int({ecfg[{gi, 4'h2}], ecfg[{gi, 4'h1}]}), .div_frac(ecfg[{gi, 4'h0}]),
                 .in_base(ecfg[{gi, 4'h3}][2:0]), .out_base(ecfg[{gi, 4'h3}][5:3]),
