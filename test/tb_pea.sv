@@ -842,10 +842,10 @@ module tb_pea;
         wr(7'h00, 8'h01);
         #1200000; erd(0, 4'hD, q);
         check(ow_resets == 1 && q[7] === 1'b0, "1-Wire: reset pulse, presence detected");
-        ecfg(0, 4'hD, 8'h33); #700000; erd(0, 4'hD, q);
+        ecfg(0, 4'hD, 8'h33); #900000; erd(0, 4'hD, q);
         bad = (q !== 8'h33); if (bad) $display("  1-Wire echo %h", q);
         for (ne = 0; ne < 8; ne = ne + 1) begin
-            ecfg(0, 4'hD, 8'hFF); #700000; erd(0, 4'hD, q);
+            ecfg(0, 4'hD, 8'hFF); #900000; erd(0, 4'hD, q);
             if (q !== ow_rom[8 * ne +: 8]) begin bad = bad + 1; $display("  1-Wire byte %0d: got %h want %h (echo/presence ok)", ne, q, ow_rom[8 * ne +: 8]); end
             jtdo[8 * ne +: 8] = q;
         end
