@@ -13,6 +13,24 @@ How it was made: designed with the Auralis workflow. RTL was linted (Verilator `
 
 **Protocols verified:** UART (any baud, ±3 %), SPI controller modes 0–3, SPI target, I2C write and read at 100/400 kHz with clock stretching, JTAG (full TAP), SWD read, USB-style NRZI + bit stuffing + CRC-16, and four protocols running concurrently. Added after the hardware was frozen, as firmware only: **WS2812 LEDs, 1-Wire, CAN 2.0A** (stuffing, CRC-15, ACK). **Low-speed USB device**: answers a host's GET_DESCRIPTOR (SETUP + IN stages) with on-chip NRZI, stuffing, SE0 and CRC-16, within USB turnaround time. Engine checked clock-by-clock against an independent ISA model on 1.2M random-instruction clocks (91/91 coverage bins, 10/10 planted bugs caught). 65/65 simulation checks, formal proofs of FIFO and fetch-arbiter correctness, gate-level test and precheck pass.
 
+
+## Waveforms (from the simulation)
+
+Drawn automatically in CI from the same testbench that runs the 65 checks (`test/plot_waves.py`). The pins
+show what is on the wire: driven by the chip, or by the external device model when the chip releases them.
+
+| | |
+|---|---|
+| ![UART](docs/waveforms/uart.png) | ![SPI](docs/waveforms/spi.png) |
+| ![I2C](docs/waveforms/i2c.png) | ![SPI target](docs/waveforms/spi_target.png) |
+| ![JTAG](docs/waveforms/jtag.png) | ![SWD](docs/waveforms/swd.png) |
+| ![WS2812](docs/waveforms/ws2812.png) | ![1-Wire](docs/waveforms/onewire.png) |
+| ![CAN](docs/waveforms/can.png) | ![NRZI](docs/waveforms/nrzi.png) |
+| ![USB ACK](docs/waveforms/usb_ack.png) | ![USB DATA1](docs/waveforms/usb_data1.png) |
+
+![USB control transfer](docs/waveforms/usb.png)
+![Concurrency](docs/waveforms/concurrency.png)
+
 ## Architecture
 
 ```

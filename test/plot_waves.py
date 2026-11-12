@@ -125,8 +125,8 @@ def draw(view, t0, t_end, ev, out, name):
                 if not on and s0 is not None:
                     ax.axvspan(s0 * sc, tt * sc, color='#f2b134', alpha=0.3, lw=0)
                     s0 = None
-            ax.text(b * sc, -0.5, 'shaded: driven by the chip (unshaded: host model)', ha='right',
-                    fontsize=8, color='#a06d00')
+            ax.set_title('shaded: driven by the chip, unshaded: host model', loc='right', fontsize=8,
+                         color='#a06d00')
         ax.set_yticks([])
         ax.set_xlim(a * sc, b * sc)
         ax.set_xlabel(f'simulation time ({unit}), RTL simulation, Icarus Verilog')
