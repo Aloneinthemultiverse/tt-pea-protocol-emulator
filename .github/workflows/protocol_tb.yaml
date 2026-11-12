@@ -15,3 +15,4 @@ jobs:
       - run: "! grep -q FAIL sim.log"
       - run: iverilog -g2012 -o esim test/tb_engine_rand.sv src/pea_engine.v && vvp -n esim
       - run: python3 test/pea_ref.py engine_trace.txt
+      - run: bash test/mutants.sh
