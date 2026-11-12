@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 VIEWS = {
     'UART': ('UART 115200 baud: engine 0 TX looped into engine 1 RX', [(0, 'TX'), (1, 'RX')], 0, 24, 'uart'),
     'SPI master': ('SPI controller, mode 0', [(2, 'SCK'), (3, 'MOSI'), (4, 'MISO')], 2, 34, 'spi'),
-    'I2C master': ('I2C controller 400 kHz: START, address, ACK', [(6, 'SCL'), (5, 'SDA')], 6, 44, 'i2c'),
+    'I2C master': ('I2C controller 400 kHz: START, address, ACK', [(6, 'SCL'), (5, 'SDA')], 6, 37, 'i2c'),
     'NRZI + bit stuffing + CR': ('NRZI + bit stuffing + CRC-16 frame', [(7, 'LINE')], 7, 60, 'nrzi'),
     'JTAG': ('JTAG: TAP walk and shift', [(0, 'TCK'), (2, 'TMS'), (1, 'TDI'), (4, 'TDO')], 0, 40, 'jtag'),
     'SWD read': ('SWD read: request, turnaround, ACK, data', [(0, 'SWCLK'), (1, 'SWDIO')], 0, 60, 'swd'),
@@ -109,6 +109,17 @@ def draw(view, t0, t_end, ev, out, name):
             ys.append(ys[-1])
             ax.plot([x * sc for x in xs], [y0 + y for y in ys], lw=1.4, color='#1f5fa8')
             ax.text(a * sc, y0 + 0.5, label + '  ', ha='right', va='center', fontsize=10)
+        if fname.startswith('usb'):             # shade SE0 (both lines low): end of each packet
+            cur, s0 = v0, None
+            for tt, v in [(a, None)] + [e for e in sec if a < e[0] < b] + [(b, None)]:
+                if v is not None:
+                    cur = v
+                low = (cur >> 6) & 3 == 0
+                if low and s0 is None: s0 = tt
+                if (not low or v is None) and s0 is not None:
+                    ax.axvspan(s0 * sc, tt * sc, color='#f2b134', alpha=0.35, lw=0)
+                    s0 = None
+            ax.text(b * sc, -0.45, 'shaded: SE0 end-of-packet', ha='right', fontsize=8, color='#a06d00')
         ax.set_yticks([])
         ax.set_xlim(a * sc, b * sc)
         ax.set_xlabel(f'simulation time ({unit}), RTL simulation, Icarus Verilog')
