@@ -39,7 +39,10 @@ def main():
         if t[0] == 'M':
             marks.append((int(t[1]), ' '.join(t[2:])))
         else:
-            ev.append((int(t[0]), int(t[1], 16)))
+            try:
+                ev.append((int(t[0]), int(t[1], 16)))
+            except ValueError:          # X/Z before reset
+                pass
     made = 0
     for i, (t0, name) in enumerate(marks):
         if name not in VIEWS:
