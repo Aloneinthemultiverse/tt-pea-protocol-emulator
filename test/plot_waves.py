@@ -15,8 +15,9 @@ VIEWS = {
     'NRZI + bit stuffing + CR': ('NRZI + bit stuffing + CRC-16 frame', [(7, 'LINE')], 7, 60, 'nrzi'),
     'JTAG': ('JTAG: TAP walk and shift', [(0, 'TCK'), (2, 'TMS'), (1, 'TDI'), (4, 'TDO')], 0, 40, 'jtag'),
     'SWD read': ('SWD read: request, turnaround, ACK, data', [(0, 'SWCLK'), (1, 'SWDIO')], 0, 60, 'swd'),
-    'concurrency': ('Four engines at once: UART, SPI, I2C', [(0, 'UART TX'), (1, 'UART RX'), (2, 'SCK'),
-                    (3, 'MOSI'), (6, 'SCL'), (5, 'SDA')], 2, 60, 'concurrency'),
+    'concurrency': ('Engines running at once: UART TX -> RX loopback, SPI and I2C in the same 100 µs',
+                    [(0, 'UART TX'), (1, 'UART RX'), (2, 'SCK'), (3, 'MOSI'), (6, 'SCL'), (5, 'SDA')], 6, 0,
+                    'concurrency', {'span': 100000}),
     'SPI target': ('SPI target: external controller drives SCK, CSn, MOSI', [(1, 'CSn'), (0, 'SCK'), (2, 'MOSI'),
                    (3, 'MISO')], 0, 34, 'spi_target'),
     'WS2812': ('WS2812 LEDs: 800 kHz pulse-width code', [(0, 'DIN')], 0, 40, 'ws2812'),
@@ -24,6 +25,14 @@ VIEWS = {
     'CAN 2.0A': ('CAN 2.0A 500 kbit/s frame (bus = TX wired-AND receiver ACK)', [(0, 'TX'), (1, 'BUS')], 0, 70, 'can'),
     'Low-speed USB device': ('Low-speed USB: host SETUP + DATA0, device ACK, host IN, device DATA1',
                              [(6, 'D-'), (7, 'D+')], 6, 400, 'usb'),
+}
+EXTRA = {   # zoomed views: window around the k-th SE0 (end of packet) of the section
+    'Low-speed USB device': [
+        ('USB zoom: end of host DATA0 (SE0), device ACK packet 3-4 bit times later', [(6, 'D-'), (7, 'D+')],
+         'usb_ack', {'se0': 1, 'before': 14000, 'after': 20000}),
+        ('USB zoom: end of host IN token, device DATA1 packet starts (CRC computed on chip)', [(6, 'D-'), (7, 'D+')],
+         'usb_data1', {'se0': 3, 'before': 14000, 'after': 30000}),
+    ],
 }
 
 
@@ -47,8 +56,18 @@ def main():
     for i, (t0, name) in enumerate(marks):
         if name not in VIEWS:
             continue
-        title, pins, cpin, nedge, fname = VIEWS[name]
-        t_end = marks[i + 1][0] if i + 1 < len(marks) else ev[-1][0]
+        views = [VIEWS[name]] + [(x[0], x[1], 6, 0, x[2], x[3]) for x in EXTRA.get(name, [])]
+        for view in views:
+            made += draw(view, t0, marks[i + 1][0] if i + 1 < len(marks) else ev[-1][0], ev, out, name)
+    total = len(VIEWS) + sum(len(v) for v in EXTRA.values())
+    print(f'{made}/{total} waveform pictures')
+    sys.exit(0 if made == total else 1)
+
+
+def draw(view, t0, t_end, ev, out, name):
+    if True:
+        title, pins, cpin, nedge, fname = view[:5]
+        opt = view[5] if len(view) > 5 else {}
         sec = [e for e in ev if t0 <= e[0] < t_end]
         prev = [v for (tt, v) in ev if tt < t0]
         v0 = prev[-1] if prev else 0
@@ -60,9 +79,18 @@ def main():
                 last = b
         if len(edges) < 2:
             print(f'{name}: no activity on pin {cpin}')
-            continue
-        span = edges[min(nedge, len(edges) - 1)] - edges[0]
-        a, b = edges[0] - span * 0.05, edges[min(nedge, len(edges) - 1)] + span * 0.05
+            return 0
+        if 'se0' in opt:
+            se0 = [tt for k, (tt, v) in enumerate(sec) if (v >> 6) & 3 == 0 and k and (sec[k - 1][1] >> 6) & 3]
+            if len(se0) <= opt['se0']:
+                print(f'{fname}: only {len(se0)} SE0s')
+                return 0
+            a, b = se0[opt['se0']] - opt['before'], se0[opt['se0']] + opt['after']
+        elif 'span' in opt:
+            a, b = edges[0] - opt['span'] * 0.02, edges[0] + opt['span']
+        else:
+            span = edges[min(nedge, len(edges) - 1)] - edges[0]
+            a, b = edges[0] - span * 0.05, edges[min(nedge, len(edges) - 1)] + span * 0.05
         us = (b - a) >= 20000
         sc, unit = (1e-3, 'µs') if us else (1.0, 'ns')
         fig, ax = plt.subplots(figsize=(12, 0.75 * len(pins) + 1.2))
@@ -90,10 +118,8 @@ def main():
         fig.tight_layout()
         fig.savefig(os.path.join(out, fname + '.png'), dpi=110)
         plt.close(fig)
-        made += 1
-        print(f'{name}: {fname}.png ({len(edges)} edges in section)')
-    print(f'{made} waveform pictures')
-    sys.exit(0 if made == len(VIEWS) else 1)
+        print(f'{name}: {fname}.png')
+        return 1
 
 
 if __name__ == '__main__':
