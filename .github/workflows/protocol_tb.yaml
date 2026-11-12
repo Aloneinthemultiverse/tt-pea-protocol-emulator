@@ -6,6 +6,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: YosysHQ/setup-oss-cad-suite@v3
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
       - run: yosys -q -p 'read_verilog src/pea_engine.v src/pea_core.v src/tt_um_auralis_pea.v; synth -top tt_um_auralis_pea -flatten; check -assert; stat' | tail -25
       - run: verilator --lint-only -Wall -Wno-DECLFILENAME -Wno-MULTITOP src/pea_engine.v src/pea_core.v src/tt_um_auralis_pea.v --top-module tt_um_auralis_pea
       - run: python3 test/gen_tb.py
