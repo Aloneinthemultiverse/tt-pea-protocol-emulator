@@ -105,5 +105,8 @@ into the Verilog testbench; `test/test.py` (cocotb) assembles at run time. Shipp
 | `jtag` | 5 | JTAG: host streams {TMS,TDI} pairs, full TAP control, TDO captured |
 | `swd_read` | 21 | SWD read transaction with turnaround, ACK and parity |
 | `nrzi_tx`, `nrzi_rx` | 22, 21 | USB-style NRZI + bit stuffing + CRC-16 |
+| `ws2812` | 4 | WS2812 / NeoPixel LEDs, 800 kHz pulse-width coding |
+| `onewire` | 20 | 1-Wire: reset/presence, read/write slots, Read ROM |
+| `can_tx` | 56 | CAN 2.0A transmitter: bit stuffing, CRC-15, ACK slot, EOF, 500 kbit/s |
 
 Adding a protocol = writing a `.program` section; no hardware change.

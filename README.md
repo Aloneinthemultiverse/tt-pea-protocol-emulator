@@ -11,7 +11,7 @@ How it was made: designed with the Auralis workflow. RTL was linted (Verilator `
 - [Host setup](docs/HOST.md)
 - Assembler `fw/pea_asm.py`, example programs `fw/programs.pea`
 
-**Protocols verified:** UART (any baud, ±3 %), SPI controller modes 0–3, SPI target, I2C write and read at 100/400 kHz with clock stretching, JTAG (full TAP), SWD read, USB-style NRZI + bit stuffing + CRC-16, and four protocols running concurrently. 46/46 simulation checks, formal proofs of FIFO and fetch-arbiter correctness, gate-level test and precheck pass.
+**Protocols verified:** UART (any baud, ±3 %), SPI controller modes 0–3, SPI target, I2C write and read at 100/400 kHz with clock stretching, JTAG (full TAP), SWD read, USB-style NRZI + bit stuffing + CRC-16, and four protocols running concurrently. Added after the hardware was frozen, as firmware only: **WS2812 LEDs, 1-Wire, CAN 2.0A** (stuffing, CRC-15, ACK). 56/56 simulation checks, formal proofs of FIFO and fetch-arbiter correctness, gate-level test and precheck pass.
 
 ## Architecture
 

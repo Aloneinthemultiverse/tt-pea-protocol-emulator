@@ -6,7 +6,7 @@
 |---|---|---|---|
 | Lint | Verilator `-Wall`, Yosys `check -assert` | no multiple drivers, latches, width bugs | clean |
 | Formal | SymbiYosys (Yosys + yices), k-induction | FIFO safety and data integrity; fetch arbiter fairness | **all proven** (unbounded) |
-| Protocol simulation | Icarus Verilog, `test/tb_pea.sv` | every shipped program against an independent model of the other side | **46/46 checks** |
+| Protocol simulation | Icarus Verilog, `test/tb_pea.sv` | every shipped program against an independent model of the other side | **56/56 checks** |
 | Constrained random | same bench, fixed seed `0x5EA02027` | UART RX random bytes at random baud error; SPI random full-duplex bursts in all 4 modes; SPI target random bytes | included in the 46 |
 | RTL + gate level | cocotb (`test/test.py`), Tiny Tapeout flow | host port, UART TX, UART RX on the RTL **and on the routed netlist** | pass |
 | Physical | LibreLane, Tiny Tapeout precheck | GDS, DRC/LVS, 0 routing violations, 25 MHz timing in all corners | pass |
@@ -54,10 +54,28 @@ Together these show that, for any program mix, no engine is starved of instructi
 | JTAG | walk of the TAP state machine: read IDCODE, IR scan loads BYPASS (captures `0001`), 8 bits through BYPASS with 1-bit delay, back in Run-Test/Idle |
 | SWD | read transaction: request 0xA5, ACK OK, 32-bit data, parity, turnaround |
 | Line coding | NRZI TX decoded by reference, 3 stuffed bits inserted, CRC-16 matches; NRZI RX destuffs, CRC-16 matches; TX-done flag |
+| WS2812 | 2 LEDs (48 bits) decoded from pulse widths; every high time inside the datasheet window (T0H 250–550 ns, T1H 650–950 ns); line held low to latch |
+| 1-Wire | 480 µs reset, presence detected; Read ROM (0x33) returns the 8-byte ROM of a device model; ROM CRC-8 verified |
+| CAN 2.0A | two frames at 500 kbit/s to a receiver model that hard-syncs on SOF, destuffs, checks CRC-15 and drives ACK; engine sees the ACK; stuff bits present and all correct |
 | Concurrency | UART TX → UART RX loopback, SPI and I2C running on **all four engines at once**, all correct, no overruns |
 | Global | no FIFO overruns or IRQs where none are expected |
 
 Random tests use a fixed seed, so every run is identical and failures can be replayed.
+
+## 3a. Flexibility test: protocols the hardware was not designed for
+
+The judging criterion is whether the chip can be reprogrammed for protocols it was not designed for. After the
+hardware was frozen (GDS and precheck passing), three protocols were added **as firmware only**, with no RTL change,
+each checked against an independent model of the other device:
+
+| Protocol | Program size | What it needed | Hardware changes |
+|---|---|---|---|
+| WS2812 LEDs | 4 instructions | side-set + delays for sub-bit pulse widths | none |
+| 1-Wire | 20 instructions | open-drain pin, loops for 480 µs reset, sample inside a 15 µs window | none |
+| CAN 2.0A TX | 56 instructions | equal-bit run counter (`stuff_mode`) for 5-bit stuffing, CRC unit set to 15-bit poly 0x4599, wired-AND bus for ACK, every bit (incl. stuff bits) exactly 8 ticks | none |
+
+CAN passed on the first simulation run. One finding was a test-timing bug, not a design bug (the 1-Wire test read the
+FIFO a few µs before the 8th slot finished). Known gap: CAN arbitration loss and CAN receive are not written yet.
 
 ## 4. Gate level and physical
 
@@ -96,7 +114,7 @@ independent models, gate-level simulation, precheck). Several AI mistakes listed
 
 ```
 python test/gen_tb.py
-iverilog -g2012 -o sim test/tb_pea.sv src/*.v && vvp sim      # 46 protocol checks
+iverilog -g2012 -o sim test/tb_pea.sv src/*.v && vvp sim      # 56 protocol checks
 cd formal && sby -f fifo.sby && sby -f arb.sby                # formal proofs
 cd test && make                                               # cocotb (RTL); GATES=yes for gate level
 ```
