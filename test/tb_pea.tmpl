@@ -284,6 +284,13 @@ module tb_pea;
             end
         end
     endtask
+    reg [5:0] trc_pc = 0;
+    always @(dut.u_core.e_pc[1]) if (usb_sel) begin
+        if ((dut.u_core.e_pc[1] == 0 || dut.u_core.e_pc[1] == 7 || dut.u_core.e_pc[1] == 10 || dut.u_core.e_pc[1] == 17 || dut.u_core.e_pc[1] == 24) && trc_pc != dut.u_core.e_pc[1] && !(trc_pc == 9 && dut.u_core.e_pc[1] == 7))
+            $display("  t=%0t rx pc %0d dm %b dp %b  e2 pc %0d e3 pc %0d oe %b", $realtime, dut.u_core.e_pc[1], usb_dm, usb_dp, dut.u_core.e_pc[2], dut.u_core.e_pc[3], uio_oe[7:6]);
+        trc_pc = dut.u_core.e_pc[1];
+    end
+    always @(h_oe) if (usb_sel) $display("  t=%0t host drive %b", $realtime, h_oe);
     // host MCU: drains the receive engine's FIFO while the bus runs
     reg [7:0] urx [0:63], ur_q; integer urx_n = 0; reg urx_on = 0;
     always begin
