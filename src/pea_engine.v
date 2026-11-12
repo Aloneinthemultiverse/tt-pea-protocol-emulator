@@ -104,6 +104,7 @@ module pea_engine (
     endfunction
 
     wire        pin_in0  = pins[in_base];
+    wire [1:0]  pins_j   = {pins[jmp_pin + 3'd1], pins[jmp_pin]};
     wire        edge_any = pins[a[5:3]] != pins_prev[a[5:3]];
     wire [5:0]  pc_inc   = (pc == wrap_top) ? wrap_bot : pc + 6'd1;
     // minimum tick period is 2 clocks (instruction fetch is registered)
@@ -166,7 +167,7 @@ module pea_engine (
                         3'd2: begin jtaken = (x != 8'd0); x_n = x - 8'd1; end
                         3'd3: jtaken = (y == 8'd0);
                         3'd4: begin jtaken = (y != 8'd0); y_n = y - 8'd1; end
-                        3'd5: jtaken = pins[jmp_pin];
+                        3'd5: jtaken = diff ? (pins_j[1:0] == 2'b00) : pins_j[0];   // diff: SE0 on jmp_pin, jmp_pin+1
                         3'd6: begin jtaken = (run >= stuff_n); if (jtaken) run_n = 3'd0; end
                         default: jtaken = (x != y);
                     endcase

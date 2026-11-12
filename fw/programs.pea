@@ -305,3 +305,128 @@ ins3:   mov pins ~pins  [3]
 ins4:   mov pins ~pins  [3]
         in pins 1       [1]
         jmp l4
+
+.program usb_rx
+; Low-speed USB receiver (1.5 Mbit/s). D- = pin 6 (in base, NRZI input), D+ = pin 7.
+; Tick = bit/3, auto_resync + resync_half, autopush, LSB first, diff mode (jmp pin = SE0 on 6,7).
+; Packets of any length: SYNC is skipped, the PID and every byte are pushed, the end is found
+; by SE0. At EOP the CRC-16 residual over the bytes after the PID is pushed (low, high);
+; 0x800D means a data packet arrived intact. Then flags 1 and 2 are raised.
+; Wrap: bit .. (jmp pin eop).
+rx:     wait 0 edge 6 resync        ; J -> K: start of SYNC
+        in nrzi 1 discard           ; latch the line level
+        set y 6
+        set x 7
+        set ctl 5                   ; CRC on IN bits, clear the run counter
+sy:     in nrzi 1 discard           ; rest of SYNC
+        jmp y-- sy      [1]
+pid:    in nrzi 1                   ; PID: 8 bits, CRC held at its start value
+        mov crc ~null
+        jmp x-- pid
+bit:    in nrzi 1
+        jmp stuff skip
+        jmp pin eop                 ; SE0: end of packet
+skip:   nop
+        in nrzi 1 discard           ; drop the stuffed bit
+        nop
+        jmp bit
+eop:    set ctl 0
+        mov isr crclo
+        push
+        mov isr crchi
+        push
+        set flag 9                  ; flag 1: packet received (transmit engine)
+        set flag 10                 ; flag 2: packet received (handshake engine)
+        wait 1 pin 6                ; back to J
+        jmp rx
+
+.program usb_ack
+; Handshake engine: after the SETUP token and the DATA0 packet, answers ACK within ~3 bit times.
+; Tick = bit/4. D- = out/set base (pin 6), diff, MSB first. Host preloads [15, 0x01, 0x4B]
+; (SYNC and the ACK PID, bit-reversed for MSB-first output).
+        pull
+        mov x osr                   ; 16 bits - 1
+        pull                        ; SYNC held in OSR
+        set y 1
+aw:     wait 1 flag 2               ; SETUP token, then DATA0
+        set flag 2
+        jmp y-- aw
+        set pindirs 3               ; drive D-, D+
+abit:   out nrzi 1      [1]
+        jmp x-- abit    [1]
+        set pins 0      [3]         ; EOP: SE0 for 2 bits
+        nop             [3]
+        set pins 1      [3]         ; J
+        set pindirs 0               ; release the bus
+park:   wait 1 flag 7               ; done; the host re-arms by writing the PC
+
+.program usb_tx
+; Data engine: answers the IN token with DATA1 + payload + CRC-16 (computed on chip), with bit
+; stuffing and EOP. Tick = bit/4, every bit (stuff bits too) is exactly 4 ticks.
+; D- = out/set base (pin 6), diff, MSB first; the host bit-reverses bytes.
+; Host preloads [data bits - 2, SYNC, PID, payload...]. Flag 1 counts packets on the bus:
+; SETUP, DATA0, our ACK, IN -> transmit.
+start:  pull
+        mov x osr                   ; data bits - 2
+        pull                        ; SYNC held in OSR
+        set y 3
+w:      wait 1 flag 1
+        set flag 1
+        jmp y-- w
+        set y 15                    ; SYNC + PID: 16 bits
+        set ctl 2                   ; CRC on OUT bits
+        set pindirs 3
+hbit:   out nrzi 1                  ; header: CRC kept at its start value
+        mov crc ~null
+        jmp y-- hbit    [1]
+dbit:   out nrzi 1
+        jmp stuff dins
+dchk:   set y 6
+        jmp x-- dbit
+dlast:  out nrzi 1
+        jmp stuff lins
+        set ctl 0
+        mov osr ~crchi              ; CRC is sent inverted, MSB first
+cbit:   out nrzi 1
+        jmp stuff cins
+cchk:   set x 6
+        jmp y-- cbit
+clast:  out nrzi 1
+        jmp stuff clins
+        mov osr ~crclo  [1]
+ebit:   out nrzi 1
+        jmp stuff eins
+echk:   nop
+        jmp x-- ebit
+elast:  out nrzi 1
+        jmp stuff elins
+        nop             [1]
+eop:    set pins 0      [3]         ; SE0 for 2 bits
+        nop             [3]
+        set pins 1      [3]         ; J
+        set pindirs 0
+        set y 1
+w2:     wait 1 flag 1               ; our DATA1 and the host's ACK
+        set flag 1
+        jmp y-- w2
+        jmp start
+dins:   nop             [1]
+        set nrzi 0                  ; stuffed 0
+        jmp dchk
+lins:   set ctl 0
+        mov osr ~crchi
+        set nrzi 0      [2]
+        jmp cbit
+cins:   nop             [1]
+        set nrzi 0
+        jmp cchk
+clins:  mov osr ~crclo
+        nop
+        set nrzi 0      [2]
+        jmp ebit
+eins:   nop             [1]
+        set nrzi 0
+        jmp echk
+elins:  nop             [1]
+        set nrzi 0      [2]
+        jmp eop

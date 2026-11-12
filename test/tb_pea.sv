@@ -18,10 +18,13 @@ module tb_pea;
     wire scl = line[6] & ~sl_scl_low;
     reg  jtag_sel = 0, swd_sel = 0, tdo = 0, sw_drive = 0, sw_bit = 1;
     wire swdio = sw_drive ? sw_bit : line[1];
+    reg  usb_sel = 0, h_oe = 0, h_dp = 0, h_dm = 1;
+    wire usb_dm = uio_oe[6] ? uio_out[6] : h_oe ? h_dm : 1'b1;
+    wire usb_dp = uio_oe[7] ? uio_out[7] : h_oe ? h_dp : 1'b0;
     reg  can_sel = 0, can_ack = 0, ow_sel = 0, ws_sel = 0;
     wire can_bus = line[0] & ~can_ack;           // CAN bus: TX pin wired-AND with the receiver's ACK
     reg  ext_sel = 0, m_sck = 0, m_csn = 1, m_mosi = 0;     // external SPI controller (target test)
-    wire [7:0] uio_in = {nrzi_sel ? tb_nrzi : line[7], scl, sda, jtag_sel ? tdo : s_miso, line[3],
+    wire [7:0] uio_in = {usb_sel ? usb_dp : nrzi_sel ? tb_nrzi : line[7], usb_sel ? usb_dm : scl, sda, jtag_sel ? tdo : s_miso, line[3],
                          ext_sel ? m_mosi : line[2],
                          ext_sel ? m_csn : swd_sel ? swdio : can_sel ? can_bus : urx_sel ? tb_utx : line[0],
                          ext_sel ? m_sck : line[0]};
@@ -61,16 +64,16 @@ module tb_pea;
         begin rd(7'h10 + e * 16 + {3'd0, r}, q); end
     endtask
 
-    reg [15:0] pm [0:63];
+    reg [15:0] pm [0:127];
     integer pi;
     task pm_clear;
-        begin for (pi = 0; pi < 64; pi = pi + 1) pm[pi] = 16'h0000; end
+        begin for (pi = 0; pi < 128; pi = pi + 1) pm[pi] = 16'h0000; end
     endtask
     task pm_load;
         begin
             wr(7'h00, 8'h00); wr(7'h02, 8'h00); wr(7'h03, 8'h00);
             csn = 0; #80; spi_byte(8'h84, junk);
-            for (pi = 0; pi < 64; pi = pi + 1) begin spi_byte(pm[pi][7:0], junk); spi_byte(pm[pi][15:8], junk); end
+            for (pi = 0; pi < 128; pi = pi + 1) begin spi_byte(pm[pi][7:0], junk); spi_byte(pm[pi][15:8], junk); end
             #80; csn = 1; #160;
         end
     endtask
@@ -220,6 +223,73 @@ module tb_pea;
             end
         end
     endtask
+
+    // ---------------- USB low-speed host model (1.5 Mbit/s): NRZI, bit stuffing, SE0 EOP, CRC-16
+    real UB = 666.667;
+    reg [7:0] hb [0:15];                         // packet to send (after SYNC), LSB first on the wire
+    reg [7:0] rb_ [0:15]; integer r_nb;          // received packet bytes (PID first)
+    reg [15:0] r_res;                            // CRC-16 residual of a received data packet
+    realtime h_eop_t, d_sop_t;
+    function [7:0] rev8(input [7:0] v);
+        integer i; begin for (i = 0; i < 8; i = i + 1) rev8[i] = v[7 - i]; end
+    endfunction
+    task h_send(input integer nb);               // SYNC + hb[0..nb-1], then EOP
+        integer k, i, ones; reg st, b;
+        begin
+            h_oe = 1; st = 1; ones = 0;
+            for (k = -1; k < nb; k = k + 1)
+                for (i = 0; i < 8; i = i + 1) begin
+                    b = (k < 0) ? (i == 7) : hb[k][i];
+                    if (!b) st = ~st;
+                    h_dm = st; h_dp = ~st; #(UB);
+                    ones = b ? ones + 1 : 0;
+                    if (ones == 6) begin st = ~st; h_dm = st; h_dp = ~st; #(UB); ones = 0; end
+                end
+            h_dm = 0; h_dp = 0; #(2 * UB);         // SE0
+            h_dm = 1; h_dp = 0; #(UB);             // J
+            h_oe = 0; h_eop_t = $realtime;
+        end
+    endtask
+    task h_crc(input integer nb);                // append the CRC-16 of hb[1..nb-1] at hb[nb], hb[nb+1]
+        integer k, i; reg [15:0] c;
+        begin
+            c = 16'hFFFF;
+            for (k = 1; k < nb; k = k + 1) for (i = 0; i < 8; i = i + 1) c = crc_step(c, hb[k][i]);
+            hb[nb] = rev8(~c[15:8]); hb[nb + 1] = rev8(~c[7:0]);
+        end
+    endtask
+    task h_recv(output integer ok);              // one packet from the device, with timeout
+        integer nbit, ones, k; reg prev, cur, b; reg [255:0] bits;
+        begin
+            ok = 0; nbit = 0; ones = 0; prev = 1;
+            fork : wt
+                begin @(negedge usb_dm); disable wt; end
+                begin #(30 * UB); disable wt; end
+            join
+            if (usb_dm === 1'b0) begin
+                d_sop_t = $realtime; ok = 1;
+                #(UB / 2);
+                while (!(usb_dm === 1'b0 && usb_dp === 1'b0)) begin
+                    cur = usb_dm; b = (cur == prev); prev = cur;
+                    if (ones == 6) ones = 0;          // stuffed bit: drop
+                    else begin bits[nbit] = b; nbit = nbit + 1; ones = b ? ones + 1 : 0; end
+                    #(UB);
+                end
+                r_nb = (nbit - 8) / 8;
+                for (k = 0; k < r_nb * 8; k = k + 1) rb_[k / 8][k % 8] = bits[8 + k];
+                r_res = 16'hFFFF;
+                for (k = 16; k < nbit; k = k + 1) r_res = crc_step(r_res, bits[k]);
+                #(3 * UB);
+            end
+        end
+    endtask
+    // host MCU: drains the receive engine's FIFO while the bus runs
+    reg [7:0] urx [0:63]; integer urx_n = 0; reg urx_on = 0;
+    always begin
+        wait (urx_on);
+        erd(1, 4'hE, q2);
+        if (!q2[3]) begin erd(1, 4'hD, q2); urx[urx_n] = q2; urx_n = urx_n + 1; end
+    end
 
     // JTAG host-side cycle list
     reg [7:0] jtx [0:17];
@@ -930,6 +1000,160 @@ module tb_pea;
         check(c_stuffs >= 4 && c_serr == 0, "CAN: stuff bits inserted, none wrong");
         wr(7'h00, 8'h00); can_sel = 0;
         rd(7'h01, q); check(q === 8'h00, "WS2812/1-Wire/CAN: no overruns");
+
+        // ===== Low-speed USB device: control transfer GET_DESCRIPTOR (SETUP stage + IN data stage)
+        // engine 1 = receiver (bank 0 @0), engine 2 = handshake (bank 0 @32), engine 3 = data TX (bank 1)
+        wr(7'h00, 8'h00); pm_clear;
+        // usb_rx: 26 words at 0
+        pm[0] = 16'h2074;
+        pm[1] = 16'h4161;
+        pm[2] = 16'hc086;
+        pm[3] = 16'hc047;
+        pm[4] = 16'hc1c5;
+        pm[5] = 16'h4161;
+        pm[6] = 16'h0305;
+        pm[7] = 16'h4141;
+        pm[8] = 16'ha1d3;
+        pm[9] = 16'h0087;
+        pm[10] = 16'h4141;
+        pm[11] = 16'h018d;
+        pm[12] = 16'h0151;
+        pm[13] = 16'ha082;
+        pm[14] = 16'h4161;
+        pm[15] = 16'ha082;
+        pm[16] = 16'h000a;
+        pm[17] = 16'hc1c0;
+        pm[18] = 16'ha144;
+        pm[19] = 16'h8040;
+        pm[20] = 16'ha145;
+        pm[21] = 16'h8040;
+        pm[22] = 16'hc109;
+        pm[23] = 16'hc10a;
+        pm[24] = 16'h2130;
+        pm[25] = 16'h0000;
+        // usb_ack: 15 words at 32
+        pm[32] = 16'h8140;
+        pm[33] = 16'ha047;
+        pm[34] = 16'h8140;
+        pm[35] = 16'hc081;
+        pm[36] = 16'h2190;
+        pm[37] = 16'hc102;
+        pm[38] = 16'h0124;
+        pm[39] = 16'hc0c3;
+        pm[40] = 16'h6341;
+        pm[41] = 16'h02a8;
+        pm[42] = 16'hc600;
+        pm[43] = 16'ha682;
+        pm[44] = 16'hc601;
+        pm[45] = 16'hc0c0;
+        pm[46] = 16'h21b8;
+        // usb_tx: 64 words at 64
+        pm[64] = 16'h8140;
+        pm[65] = 16'ha047;
+        pm[66] = 16'h8140;
+        pm[67] = 16'hc083;
+        pm[68] = 16'h2188;
+        pm[69] = 16'hc101;
+        pm[70] = 16'h0144;
+        pm[71] = 16'hc08f;
+        pm[72] = 16'hc1c2;
+        pm[73] = 16'hc0c3;
+        pm[74] = 16'h6141;
+        pm[75] = 16'ha1d3;
+        pm[76] = 16'h034a;
+        pm[77] = 16'h6141;
+        pm[78] = 16'h01ec;
+        pm[79] = 16'hc086;
+        pm[80] = 16'h00cd;
+        pm[81] = 16'h6141;
+        pm[82] = 16'h01ef;
+        pm[83] = 16'hc1c0;
+        pm[84] = 16'ha195;
+        pm[85] = 16'h6141;
+        pm[86] = 16'h01f3;
+        pm[87] = 16'hc046;
+        pm[88] = 16'h0155;
+        pm[89] = 16'h6141;
+        pm[90] = 16'h01f6;
+        pm[91] = 16'ha394;
+        pm[92] = 16'h6141;
+        pm[93] = 16'h01fa;
+        pm[94] = 16'ha082;
+        pm[95] = 16'h00dc;
+        pm[96] = 16'h6141;
+        pm[97] = 16'h01fd;
+        pm[98] = 16'ha282;
+        pm[99] = 16'hc600;
+        pm[100] = 16'ha682;
+        pm[101] = 16'hc601;
+        pm[102] = 16'hc0c0;
+        pm[103] = 16'hc081;
+        pm[104] = 16'h2188;
+        pm[105] = 16'hc101;
+        pm[106] = 16'h0168;
+        pm[107] = 16'h0040;
+        pm[108] = 16'ha282;
+        pm[109] = 16'hc180;
+        pm[110] = 16'h004f;
+        pm[111] = 16'hc1c0;
+        pm[112] = 16'ha195;
+        pm[113] = 16'hc580;
+        pm[114] = 16'h0055;
+        pm[115] = 16'ha282;
+        pm[116] = 16'hc180;
+        pm[117] = 16'h0057;
+        pm[118] = 16'ha194;
+        pm[119] = 16'ha082;
+        pm[120] = 16'hc580;
+        pm[121] = 16'h005c;
+        pm[122] = 16'ha282;
+        pm[123] = 16'hc180;
+        pm[124] = 16'h005e;
+        pm[125] = 16'ha282;
+        pm[126] = 16'hc580;
+        pm[127] = 16'h0063;
+        pm_load;
+        usb_sel = 1; wr(7'h06, 8'h00); wr(7'h07, 8'h00); wr(7'h08, 8'h40); wr(7'h02, 8'h00); #500;
+        esetup(1, 16'd11, 8'd28, 8'h36, 8'h06, 8'h16, 6'd10, 6'd12, 8'hB5, 6'd0);
+        ecfg(1, 4'hA, 8'hF6); ecfg(1, 4'hB, 8'h05); ecfg(1, 4'hC, 8'h80);
+        esetup(2, 16'd8, 8'd85, 8'h36, 8'h06, 8'h16, 6'd32, 6'd63, 8'h88, 6'd32);
+        esetup(3, 16'd8, 8'd85, 8'h36, 8'h06, 8'h56, 6'd0, 6'd63, 8'h88, 6'd0);
+        ecfg(3, 4'hA, 8'hF6); ecfg(3, 4'hB, 8'h05); ecfg(3, 4'hC, 8'h80);
+        wr(7'h00, 8'h0E);
+        ecfg(2, 4'hD, 8'd15); ecfg(2, 4'hD, 8'h01); ecfg(2, 4'hD, rev8(8'hD2));   // ACK packet
+        // DATA1 + first 8 bytes of a device descriptor
+        ecfg(3, 4'hD, 8'd62); ecfg(3, 4'hD, 8'h01); ecfg(3, 4'hD, rev8(8'h4B));
+        ecfg(3, 4'hD, rev8(8'h12)); ecfg(3, 4'hD, rev8(8'h01)); ecfg(3, 4'hD, rev8(8'h10)); ecfg(3, 4'hD, rev8(8'h01));
+        ecfg(3, 4'hD, rev8(8'h00)); ecfg(3, 4'hD, rev8(8'h00)); ecfg(3, 4'hD, rev8(8'h00)); ecfg(3, 4'hD, rev8(8'h08));
+        #2000;
+        urx_n = 0; urx_on = 1;
+        // SETUP token to address 0, endpoint 0
+        hb[0] = 8'h2D; hb[1] = 8'h00; hb[2] = 8'h10; h_send(3);
+        #(3 * UB);
+        // DATA0: GET_DESCRIPTOR(device), wLength 8
+        hb[0] = 8'hC3; hb[1] = 8'h80; hb[2] = 8'h06; hb[3] = 8'h00; hb[4] = 8'h01;
+        hb[5] = 8'h00; hb[6] = 8'h00; hb[7] = 8'h08; hb[8] = 8'h00; h_crc(9); h_send(11);
+        h_recv(ne);
+        check(ne == 1 && r_nb == 1 && rb_[0] === 8'hD2, "USB: device ACKs the SETUP stage");
+        check(d_sop_t - h_eop_t < 7.5 * UB, "USB: ACK within 7.5 bit times");
+        #(4 * UB);
+        hb[0] = 8'h69; hb[1] = 8'h00; hb[2] = 8'h10; h_send(3);           // IN token
+        h_recv(ne);
+        check(ne == 1 && rb_[0] === 8'h4B && rb_[1] === 8'h12 && rb_[2] === 8'h01 && rb_[8] === 8'h08,
+              "USB: DATA1 descriptor bytes to the host");
+        check(r_nb == 11 && r_res === 16'h800D, "USB: on-chip CRC-16 valid at the host");
+        check(d_sop_t - h_eop_t < 7.5 * UB, "USB: DATA1 within 7.5 bit times");
+        #(2 * UB);
+        hb[0] = 8'hD2; h_send(1);                                        // host ACK
+        #20000; urx_on = 0; #10000;
+        // what the receive engine decoded (PID first, residual low/high after each packet)
+        check(urx[0] === 8'h2D && urx[1] === 8'h00 && urx[2] === 8'h10, "USB RX: SETUP token decoded");
+        check(urx[5] === 8'hC3 && urx[6] === 8'h80 && urx[7] === 8'h06 && urx[13] === 8'h00,
+              "USB RX: DATA0 setup bytes decoded");
+        check({urx[17], urx[16]} === 16'h800D, "USB RX: DATA0 CRC-16 residual 0x800D");
+        $display("  USB RX bytes: %0d", urx_n);
+        rd(7'h01, q); check(q === 8'h00, "USB: no FIFO overruns");
+        wr(7'h00, 8'h00); usb_sel = 0;
 
         if (fails == 0) $display("ALL TESTS PASSED (%0d checks)", checks);
         else $display("%0d of %0d checks FAILED", fails, checks);
