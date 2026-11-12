@@ -364,18 +364,23 @@ park:   wait 1 flag 7               ; done; the host re-arms by writing the PC
 ; Data engine: answers the IN token with DATA1 + payload + CRC-16 (computed on chip), with bit
 ; stuffing and EOP. Tick = bit/4, every bit (stuff bits too) is exactly 4 ticks.
 ; D- = out/set base (pin 6), diff, MSB first; the host bit-reverses bytes.
-; Host preloads [data bits - 2, SYNC, PID, payload...]. Flag 1 counts packets on the bus:
-; SETUP, DATA0, our ACK, IN -> transmit.
+; Host preloads [data bits - 2, PID, 8 payload bytes] (the payload fills the 8-deep FIFO; SYNC is
+; generated in code, the PID waits in the OSR). Flag 1 counts packets on the bus:
+; SETUP, DATA0, our ACK, IN -> transmit. Afterwards the engine parks; the host re-arms it via the PC.
 start:  pull
         mov x osr                   ; data bits - 2
-        pull                        ; SYNC held in OSR
+        pull                        ; PID held in OSR
         set y 3
 w:      wait 1 flag 1
         set flag 1
         jmp y-- w
-        set y 15                    ; SYNC + PID: 16 bits
+        set y 6
         set ctl 2                   ; CRC on OUT bits
         set pindirs 3
+sync:   set nrzi 0      [1]         ; SYNC: seven 0s (transitions) ...
+        jmp y-- sync    [1]
+        set nrzi 1                  ; ... and a 1
+        set y 7         [2]         ; PID: 8 bits
 hbit:   out nrzi 1                  ; header: CRC kept at its start value
         mov crc ~null
         jmp y-- hbit    [1]
@@ -405,11 +410,7 @@ eop:    set pins 0      [3]         ; SE0 for 2 bits
         nop             [3]
         set pins 1      [3]         ; J
         set pindirs 0
-        set y 1
-w2:     wait 1 flag 1               ; our DATA1 and the host's ACK
-        set flag 1
-        jmp y-- w2
-        jmp start
+park:   wait 1 flag 7               ; done
 dins:   nop             [1]
         set nrzi 0                  ; stuffed 0
         jmp dchk

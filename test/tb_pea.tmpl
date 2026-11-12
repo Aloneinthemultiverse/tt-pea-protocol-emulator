@@ -755,7 +755,7 @@ module tb_pea;
         wr(7'h00, 8'h0E);
         ecfg(2, 4'hD, 8'd15); ecfg(2, 4'hD, 8'h01); ecfg(2, 4'hD, rev8(8'hD2));   // ACK packet
         // DATA1 + first 8 bytes of a device descriptor
-        ecfg(3, 4'hD, 8'd62); ecfg(3, 4'hD, 8'h01); ecfg(3, 4'hD, rev8(8'h4B));
+        ecfg(3, 4'hD, 8'd62); ecfg(3, 4'hD, rev8(8'h4B));
         ecfg(3, 4'hD, rev8(8'h12)); ecfg(3, 4'hD, rev8(8'h01)); ecfg(3, 4'hD, rev8(8'h10)); ecfg(3, 4'hD, rev8(8'h01));
         ecfg(3, 4'hD, rev8(8'h00)); ecfg(3, 4'hD, rev8(8'h00)); ecfg(3, 4'hD, rev8(8'h00)); ecfg(3, 4'hD, rev8(8'h08));
         #2000;
