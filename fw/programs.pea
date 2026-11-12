@@ -349,8 +349,8 @@ eop:    set ctl 0
         pull                        ; SYNC held in OSR
         set y 1
 aw:     wait 1 flag 2               ; SETUP token, then DATA0
-        set flag 2
-        jmp y-- aw
+        set flag 2      [3]
+        jmp y-- aw      [3]         ; ~2 bit times: lets the receiver re-arm first
         set pindirs 3               ; drive D-, D+
 abit:   out nrzi 1      [1]
         jmp x-- abit    [1]
@@ -374,8 +374,8 @@ start:  pull
 w:      wait 1 flag 1
         set flag 1
         jmp y-- w
-        set y 6
-        set ctl 2                   ; CRC on OUT bits
+        set y 6         [3]
+        set ctl 2       [3]         ; CRC on OUT bits; delays let the receiver re-arm
         set pindirs 3
 sync:   set nrzi 0      [1]         ; SYNC: seven 0s (transitions) ...
         jmp y-- sync    [1]
